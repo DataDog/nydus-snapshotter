@@ -1,0 +1,5 @@
+FROM nginx:latest
+
+WORKDIR /test1
+
+ENTRYPOINT ["/bin/bash", "-c", "ls / && exit 0"]

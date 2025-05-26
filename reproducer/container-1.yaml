@@ -1,0 +1,5 @@
+metadata:
+  name: nydus-container
+image:
+  image: my-registry/reproducer:1
+log_path: container.1.log

@@ -1,0 +1,25 @@
+version = 1
+
+# The snapshotter's GRPC server socket, containerd will connect to plugin on this socket
+address = "/nydus.sock"
+
+[remote.auth]
+# Fetch the private registry auth as CRI image service proxy
+enable_cri_keychain = true
+# Containerd socket path
+image_service_address = "/containerd.sock"
+
+[snapshot]
+# Let containerd use nydus-overlayfs mount helper
+enable_nydus_overlayfs = true
+
+[experimental]
+# Whether to enable referrers support
+# The option enables trying to fetch the Nydus image associated with the OCI image and run it.
+# Also see https://github.com/opencontainers/distribution-spec/blob/main/spec.md#listing-referrers
+enable_referrer_detect = true
+
+[log]
+# Print logs to stdout rather than logging files
+log_to_stdout = true
+level = "info"

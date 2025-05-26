@@ -1,0 +1,39 @@
+version = 3
+
+[proxy_plugins]
+[proxy_plugins.nydus]
+type = "snapshot"
+# Required by the kubelet's imageServiceEndpoint
+# Path to nydus socket
+address = "/nydus.sock"
+
+[proxy_plugins.nydus.exports]
+enable_remote_snapshot_annotations = "true"
+
+[plugins]
+# Use nydus snapshotter through CRI
+[plugins."io.containerd.cri.v1.images"]
+snapshotter = "nydus"
+
+# Use nydus snapshotter through containerd transfer service
+[[plugins."io.containerd.transfer.v1.local".unpack_config]]
+snapshotter = "nydus"
+# need platform entry here otherwise there is no default used in containerd
+platform = "linux/amd64"
+
+# This is the default entry, which is removed if we specify another one, so we need to add it back explicitely
+[[plugins."io.containerd.transfer.v1.local".unpack_config]]
+snapshotter = "overlayfs"
+platform = "linux/amd64"
+differ = ""
+
+[plugins.'io.containerd.cri.v1.runtime']
+[plugins.'io.containerd.cri.v1.runtime'.containerd]
+default_runtime_name = 'runc'
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes]
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
+runtime_type = 'io.containerd.runc.v2'
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
+SystemdCgroup = true

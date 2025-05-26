@@ -1,0 +1,26 @@
+{
+  "device": {
+    "backend": {
+      "type": "registry",
+      "config": {
+        "timeout": 15,
+        "connect_timeout": 15,
+        "retry_limit": 5
+      }
+    },
+    "cache": {
+      "type": "blobcache",
+      "config": {
+        "work_dir": "cache"
+      }
+    }
+  },
+  "mode": "direct",
+  "digest_validate": false,
+  "iostats_files": false,
+  "enable_xattr": true,
+  "fs_prefetch": {
+    "enable": true,
+    "threads_count": 4
+  }
+}
