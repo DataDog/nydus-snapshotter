@@ -1,0 +1,10 @@
+FROM nginx:latest
+
+WORKDIR /test1
+WORKDIR /test2
+WORKDIR /test3
+WORKDIR /test4
+WORKDIR /test5
+COPY ./file1 /file1
+
+ENTRYPOINT ["/bin/bash", "-c", "ls / && exit 0"]

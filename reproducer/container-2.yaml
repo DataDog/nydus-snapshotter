@@ -1,0 +1,5 @@
+metadata:
+  name: faulty-container
+image:
+  image: my-registry/reproducer:2
+log_path: container.2.log
