@@ -40,6 +40,6 @@ func TestCheckIndexAlternative(t *testing.T) {
 		_, err := manager.CheckIndexAlternative(context.Background(), ref, manifestDigest)
 
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "no alternative nydus descriptor found in cache")
+		assert.Contains(t, err.Error(), "no alternative nydus descriptor found in index")
 	})
 }

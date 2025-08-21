@@ -45,7 +45,7 @@ func (manager *Manager) CheckIndexAlternative(ctx context.Context, ref string, m
 			if ok {
 				return &metaLayer, nil
 			}
-			return nil, errors.New("no alternative nydus descriptor found in cache")
+			return nil, nil
 		}
 
 		keyChain, err := auth.GetKeyChainByRef(ref, nil)
@@ -69,8 +69,14 @@ func (manager *Manager) CheckIndexAlternative(ctx context.Context, ref string, m
 		return metaLayer, nil
 	})
 
+	logger := log.G(ctx).WithField("ref", ref).WithField("digest", manifestDigest.String())
 	if err != nil {
-		log.G(ctx).WithField("ref", ref).WithError(err).Warn("index detection failed")
+		logger.WithError(err).Warn("index detection failed")
+		return nil, err
+	}
+	if nydusDesc == nil {
+		err = errors.New("no alternative nydus descriptor found in index")
+		logger.WithError(err).Debug("nil nydus descriptor")
 		return nil, err
 	}
 
