@@ -202,6 +202,58 @@ func TestFindNydusManifestInIndex(t *testing.T) {
 			expectError:    true,
 			errorContains:  "no nydus alternative found",
 		},
+		/* BEGIN DATADOG PATCH */
+		{
+			name: "nydus alternative found with artifact type",
+			index: ocispec.Index{
+				Manifests: []ocispec.Descriptor{
+					{
+						Digest: manifestDigest,
+						Platform: &ocispec.Platform{
+							OS:           "linux",
+							Architecture: "amd64",
+						},
+					},
+					{
+						Digest: nydusManifestDigest,
+						Platform: &ocispec.Platform{
+							OS:           "linux",
+							Architecture: "amd64",
+						},
+						ArtifactType: "application/vnd.nydus.image.manifest.v1+json",
+					},
+				},
+			},
+			manifestDigest: manifestDigest,
+			expectedDigest: &nydusManifestDigest,
+			expectError:    false,
+		},
+		{
+			name: "different artifact type is ignored",
+			index: ocispec.Index{
+				Manifests: []ocispec.Descriptor{
+					{
+						Digest: manifestDigest,
+						Platform: &ocispec.Platform{
+							OS:           "linux",
+							Architecture: "amd64",
+						},
+					},
+					{
+						Digest: nydusManifestDigest,
+						Platform: &ocispec.Platform{
+							OS:           "linux",
+							Architecture: "amd64",
+						},
+						ArtifactType: "application/foo+bar",
+					},
+				},
+			},
+			manifestDigest: manifestDigest,
+			expectError:    true,
+			errorContains:  "no nydus alternative found",
+		},
+		/* END DATADOG PATCH */
 	}
 
 	for _, tt := range tests {
