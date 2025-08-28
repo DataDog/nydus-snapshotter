@@ -119,7 +119,7 @@ func (d *detector) findNydusManifestInIndex(index ocispec.Index, originalDigest 
 		}
 	}
 	if originalDesc == nil {
-		return nil, fmt.Errorf("manifest %s not found in index", originalDigest)
+		return nil, fmt.Errorf("original manifest %s not found in index", originalDigest)
 	}
 
 	pMatcher := platforms.NewMatcher(*originalDesc.Platform)
@@ -127,6 +127,14 @@ func (d *detector) findNydusManifestInIndex(index ocispec.Index, originalDigest 
 		if d.hasNydusFeatures(manifest.Platform) && pMatcher.Match(*manifest.Platform) {
 			return &manifest, nil
 		}
+
+		/* BEGIN DATADOG PATCH */
+		// Fallback to looking for artifact type field
+		if d.hasNydusArtifactType(&manifest) && pMatcher.Match(*manifest.Platform) {
+			fmt.Println("DEBUG: found using artifact type")
+			return &manifest, nil
+		}
+		/* END DATADOG PATCH */
 	}
 
 	return nil, fmt.Errorf("no nydus alternative found in index for %s", originalDigest)
@@ -140,6 +148,17 @@ func (d *detector) hasNydusFeatures(platform *ocispec.Platform) bool {
 
 	return slices.Contains(platform.OSFeatures, nydusOSFeature)
 }
+
+/* BEGIN DATADOG PATCH */
+// hasNydusArtifactType checks if the descriptor is of nydus artifact type.
+func (d *detector) hasNydusArtifactType(desc *ocispec.Descriptor) bool {
+	if desc == nil {
+		return false
+	}
+	return desc.ArtifactType == "application/vnd.nydus.image.manifest.v1+json"
+}
+
+/* END DATADOG PATCH */
 
 // fetchMetadata fetches and unpacks nydus metadata file to specified path.
 func (r *detector) fetchMetadata(ctx context.Context, ref string, desc ocispec.Descriptor, metadataPath string) error {
