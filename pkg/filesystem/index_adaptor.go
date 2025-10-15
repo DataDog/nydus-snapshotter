@@ -41,7 +41,7 @@ func (fs *Filesystem) CheckIndexAlternative(ctx context.Context, labels map[stri
 	logger := log.G(ctx).WithField("ref", ref).WithField("digest", manifestDigest.String())
 	logger.Debug("attempting index-based nydus detection")
 
-	// Early exit if the labels explicitly indicates the presence of a nydus index alternative
+	// Early exit if the labels explicitly indicate the presence of a nydus index alternative
 	hasIndexAlternative, ok := labels[label.NydusIndexAlternative]
 	if ok && hasIndexAlternative == "true" {
 		logger.Debug("detected nydus alternative via label")
