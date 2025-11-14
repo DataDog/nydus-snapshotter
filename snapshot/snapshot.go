@@ -220,6 +220,38 @@ func NewSnapshotter(ctx context.Context, cfg *config.SnapshotterConfig) (snapsho
 	}
 	opts = append(opts, filesystem.WithCacheManager(cacheMgr))
 
+	// Initialize GC scheduler if enabled and there are managers with daemons
+	gcPeriod, err := cacheConfig.ParseGCPeriod()
+	if err != nil {
+		return nil, errors.Wrap(err, "parse GC period")
+	}
+	if gcPeriod > 0 && len(fsManagers) > 0 {
+		// Find the primary manager that manages daemons (fusedev or fscache)
+		// All managers share the same cache directory, so we only need one GC scheduler
+		var primaryManager *mgr.Manager
+		for _, m := range fsManagers {
+			if m.FsDriver == config.FsDriverFusedev || m.FsDriver == config.FsDriverFscache {
+				primaryManager = m
+				break
+			}
+		}
+		// Fallback to first manager if no fusedev/fscache found
+		if primaryManager == nil && len(fsManagers) > 0 {
+			primaryManager = fsManagers[0]
+		}
+
+		if primaryManager != nil {
+			gcScheduler, err := mgr.NewGCScheduler(primaryManager, cacheMgr, cacheConfig)
+			if err != nil {
+				return nil, errors.Wrap(err, "create GC scheduler")
+			}
+			primaryManager.SetGCScheduler(gcScheduler)
+			// Start GC scheduler in background
+			primaryManager.StartGC(ctx)
+			log.L.Infof("GC scheduler started for %s driver with period %v", primaryManager.FsDriver, gcPeriod)
+		}
+	}
+
 	if cfg.Experimental.EnableReferrerDetect {
 		referrerMgr := referrer.NewManager(skipSSLVerify)
 		opts = append(opts, filesystem.WithReferrerManager(referrerMgr))

@@ -120,3 +120,94 @@ func (m *Manager) RemoveBlobCache(blobID string) error {
 	}
 	return nil
 }
+
+// ListAllBlobs returns all blob IDs found in the cache directory.
+// It scans for files matching blob patterns and extracts unique blob IDs.
+func (m *Manager) ListAllBlobs(ctx context.Context) ([]string, error) {
+	entries, err := os.ReadDir(m.cacheDir)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to read cache directory %s", m.cacheDir)
+	}
+
+	// Use map to deduplicate blob IDs (multiple files per blob)
+	blobMap := make(map[string]bool)
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		blobID := m.extractBlobID(name)
+		if blobID != "" {
+			blobMap[blobID] = true
+		}
+	}
+
+	// Convert map to slice
+	blobs := make([]string, 0, len(blobMap))
+	for blobID := range blobMap {
+		blobs = append(blobs, blobID)
+	}
+
+	return blobs, nil
+}
+
+// extractBlobID extracts the blob ID from a cache file name by removing known suffixes.
+func (m *Manager) extractBlobID(filename string) string {
+	// Try removing known suffixes
+	suffixes := []string{
+		dataFileSuffix + chunkMapFileSuffix, // .blob.data.chunk_map (longest first)
+		chunkMapFileSuffix,                  // .chunk_map
+		dataFileSuffix,                      // .blob.data
+		metaFileSuffix,                      // .blob.meta
+		imageDiskFileSuffix,                 // .image.disk
+		layerDiskFileSuffix,                 // .layer.disk
+	}
+
+	for _, suffix := range suffixes {
+		if len(filename) > len(suffix) && filename[len(filename)-len(suffix):] == suffix {
+			return filename[:len(filename)-len(suffix)]
+		}
+	}
+
+	// If no suffix matched, assume it's a legacy unsuffixed blob
+	return filename
+}
+
+// IsBlobSafeToDelete checks if a blob can be safely deleted.
+// It verifies the blob's modification time is older than the grace period.
+func (m *Manager) IsBlobSafeToDelete(blobID string, gracePeriod time.Duration) (bool, error) {
+	// Check all possible blob file paths
+	paths := []string{
+		path.Join(m.cacheDir, blobID),
+		path.Join(m.cacheDir, blobID+dataFileSuffix),
+		path.Join(m.cacheDir, blobID+chunkMapFileSuffix),
+		path.Join(m.cacheDir, blobID+dataFileSuffix+chunkMapFileSuffix),
+		path.Join(m.cacheDir, blobID+metaFileSuffix),
+		path.Join(m.cacheDir, blobID+imageDiskFileSuffix),
+		path.Join(m.cacheDir, blobID+layerDiskFileSuffix),
+	}
+
+	now := time.Now()
+	cutoff := now.Add(-gracePeriod)
+
+	// Check if any blob file was modified recently
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue // File doesn't exist, check next
+			}
+			return false, errors.Wrapf(err, "failed to stat %s", p)
+		}
+
+		// If any file was modified within grace period, not safe to delete
+		if info.ModTime().After(cutoff) {
+			log.L.Debugf("Blob %s modified too recently: %v (cutoff: %v)", blobID, info.ModTime(), cutoff)
+			return false, nil
+		}
+	}
+
+	return true, nil
+}

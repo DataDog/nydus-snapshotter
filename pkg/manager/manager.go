@@ -49,6 +49,9 @@ type Manager struct {
 	NydusdBinaryPath string
 	RecoverPolicy    config.DaemonRecoverPolicy
 	SupervisorSet    *supervisor.SupervisorsSet
+
+	// GC scheduler for cleaning unreferenced blobs
+	gcScheduler *GCScheduler
 }
 
 type Opt struct {
@@ -378,4 +381,25 @@ func (m *Manager) recoverDaemons(ctx context.Context,
 	}
 
 	return nil
+}
+
+// StartGC starts the GC scheduler in a background goroutine.
+func (m *Manager) StartGC(ctx context.Context) {
+	if m.gcScheduler == nil {
+		log.L.Debug("GC scheduler not initialized, skipping start")
+		return
+	}
+
+	go m.gcScheduler.Start(ctx)
+}
+
+// GetGCScheduler returns the GC scheduler instance (for HTTP API access).
+func (m *Manager) GetGCScheduler() *GCScheduler {
+	return m.gcScheduler
+}
+
+// SetGCScheduler sets the GC scheduler instance.
+// This is used to inject the scheduler after manager creation.
+func (m *Manager) SetGCScheduler(scheduler *GCScheduler) {
+	m.gcScheduler = scheduler
 }

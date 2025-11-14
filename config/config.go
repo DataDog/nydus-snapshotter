@@ -9,6 +9,7 @@ package config
 
 import (
 	"os"
+	"time"
 
 	"dario.cat/mergo"
 	"github.com/pelletier/go-toml"
@@ -166,11 +167,20 @@ type SnapshotConfig struct {
 
 // Configure cache manager that manages the cache files lifecycle
 type CacheManagerConfig struct {
-	Disable bool `toml:"disable"`
-	// Trigger GC gc_period after the specified period.
-	// Example format: 24h, 120min
-	GCPeriod string `toml:"gc_period"`
-	CacheDir string `toml:"cache_dir"`
+	CacheDir string        `toml:"cache_dir"`
+	GC       CacheGCConfig `toml:"gc"`
+}
+
+type CacheGCConfig struct {
+	Enable bool `toml:"enable"`
+	// Trigger GC after the specified period. Default: 24h
+	Period time.Duration `toml:"period"`
+	// Grace period for blob safety checks. Default: 10m
+	GracePeriod time.Duration `toml:"grace_period"`
+	// Maximum concurrent daemon workers for GC. Default: 1
+	MaxDaemonWorkers int `toml:"max_daemon_workers"`
+	// Timeout for metrics query per instance. Default: 5s
+	InstanceTimeout time.Duration `toml:"instance_timeout"`
 }
 
 // Configure how nydus-snapshotter receive auth information

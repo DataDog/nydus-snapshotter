@@ -33,6 +33,15 @@ func init() {
 		data.Fds,
 		data.RunTime,
 		data.Thread,
+		// GC metrics
+		data.GCLastRunTimestamp,
+		data.GCBlobsDeleted,
+		data.GCBlobsDeletedBytes,
+		data.GCErrors,
+		data.GCDuration,
+		data.GCBlobsScanned,
+		data.GCBlobsReferenced,
+		data.GCExecutions,
 	)
 
 	for _, m := range data.MetricHists {
