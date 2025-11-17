@@ -16,6 +16,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sync"
 
 	snpkg "github.com/containerd/containerd/v2/pkg/snapshotters"
 	"github.com/mohae/deepcopy"
@@ -55,6 +56,7 @@ type Filesystem struct {
 	verifier            *signature.Verifier
 	nydusdBinaryPath    string
 	rootMountpoint      string
+	snapshotMutexMap    sync.Map
 }
 
 // NewFileSystem initialize Filesystem instance
@@ -270,6 +272,10 @@ func (fs *Filesystem) WaitUntilReady(snapshotID string) error {
 // this method will fork nydus daemon and manage it in the internal store, and indexed by snapshotID
 // It must set up all necessary resources during Mount procedure and revoke any step if necessary.
 func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[string]string, s *storage.Snapshot) (err error) {
+	mu := fs.getSnapshotMutex(snapshotID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	rafs := racache.RafsGlobalCache.Get(snapshotID)
 	if rafs != nil {
 		// Instance already exists, how could this happen? Can containerd handle this case?
@@ -437,6 +443,11 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 	}
 
 	return nil
+}
+
+func (fs *Filesystem) getSnapshotMutex(snapshotID string) *sync.Mutex {
+	mu, _ := fs.snapshotMutexMap.LoadOrStore(snapshotID, &sync.Mutex{})
+	return mu.(*sync.Mutex)
 }
 
 func (fs *Filesystem) copyBlobMetaFiles(bootstrap, cacheDir string) error {
