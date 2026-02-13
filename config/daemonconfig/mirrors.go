@@ -16,7 +16,7 @@ import (
 	"strings"
 
 	"github.com/containerd/log"
-	"github.com/pelletier/go-toml"
+	"github.com/pelletier/go-toml/v2"
 	"github.com/pkg/errors"
 )
 

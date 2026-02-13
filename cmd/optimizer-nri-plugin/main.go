@@ -26,7 +26,7 @@ import (
 	"github.com/containerd/nydus-snapshotter/pkg/errdefs"
 	"github.com/containerd/nydus-snapshotter/pkg/fanotify"
 	"github.com/containerd/nydus-snapshotter/version"
-	"github.com/pelletier/go-toml"
+	"github.com/pelletier/go-toml/v2"
 )
 
 const (

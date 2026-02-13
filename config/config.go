@@ -11,7 +11,7 @@ import (
 	"os"
 
 	"dario.cat/mergo"
-	"github.com/pelletier/go-toml"
+	"github.com/pelletier/go-toml/v2"
 	"github.com/pkg/errors"
 
 	"github.com/containerd/nydus-snapshotter/internal/constant"

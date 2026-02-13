@@ -35,7 +35,7 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/containerd/nydus-snapshotter/pkg/remote/remotes/docker"
-	"github.com/pelletier/go-toml"
+	"github.com/pelletier/go-toml/v2"
 )
 
 // UpdateClientFunc is a function that lets you to amend http Client behavior used by registry clients.
