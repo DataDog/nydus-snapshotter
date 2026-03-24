@@ -888,6 +888,14 @@ func TestKubeletProviderRegistryCache(t *testing.T) {
 			defaultTTL:       10 * time.Minute,
 			wantCachedOnNext: false,
 		},
+		{
+			name:             "response negative TTL uses default TTL",
+			pluginName:       "negative-ttl-plugin",
+			cfgName:          "negative-ttl-config.yaml",
+			responseTTL:      "-1s",
+			defaultTTL:       10 * time.Minute,
+			wantCachedOnNext: true,
+		},
 	}
 
 	_, binDir := setupKubeletProvider(t)
