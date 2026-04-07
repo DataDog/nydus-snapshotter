@@ -19,18 +19,16 @@ import (
 )
 
 type Manager struct {
-	insecure         bool
-	skipHTTPFallback bool
-	cache            *lru.Cache
-	sg               singleflight.Group
+	insecure bool
+	cache    *lru.Cache
+	sg       singleflight.Group
 }
 
-func NewManager(insecure, skipHTTPFallback bool) *Manager {
+func NewManager(insecure bool) *Manager {
 	manager := Manager{
-		insecure:         insecure,
-		skipHTTPFallback: skipHTTPFallback,
-		cache:            lru.New(500),
-		sg:               singleflight.Group{},
+		insecure: insecure,
+		cache:    lru.New(500),
+		sg:       singleflight.Group{},
 	}
 
 	return &manager
@@ -56,7 +54,7 @@ func (manager *Manager) CheckIndexAlternative(ctx context.Context, ref string, m
 		}
 
 		// No LRU cache found, try to detect nydus alternative in index manifest.
-		detector := newDetector(keyChain, manager.insecure, manager.skipHTTPFallback)
+		detector := newDetector(keyChain, manager.insecure)
 		metaLayer, err := detector.checkIndexAlternative(ctx, ref, manifestDigest)
 		if err != nil {
 			// Cache empty result to avoid repeated failures.
@@ -97,6 +95,6 @@ func (manager *Manager) TryFetchMetadata(ctx context.Context, ref string, manife
 		return errors.Wrap(err, "get key chain")
 	}
 
-	detector := newDetector(keyChain, manager.insecure, manager.skipHTTPFallback)
+	detector := newDetector(keyChain, manager.insecure)
 	return detector.fetchMetadata(ctx, ref, *metaLayer, metadataPath)
 }

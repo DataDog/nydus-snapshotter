@@ -98,7 +98,6 @@ func NewSnapshotter(ctx context.Context, cfg *config.SnapshotterConfig) (snapsho
 		}
 	}
 
-	skipHTTPFallback := cfg.RemoteConfig.SkipHTTPFallback
 	var skipSSLVerify bool
 	var daemonConfig *daemonconfig.DaemonConfig
 	fsDriver := config.GetFsDriver()
@@ -232,17 +231,17 @@ func NewSnapshotter(ctx context.Context, cfg *config.SnapshotterConfig) (snapsho
 	opts = append(opts, filesystem.WithCacheManager(cacheMgr))
 
 	if cfg.Experimental.EnableIndexDetect {
-		indexMgr := index.NewManager(skipSSLVerify, skipHTTPFallback)
+		indexMgr := index.NewManager(skipSSLVerify)
 		opts = append(opts, filesystem.WithIndexManager(indexMgr))
 	}
 
 	if cfg.Experimental.EnableReferrerDetect {
-		referrerMgr := referrer.NewManager(skipSSLVerify, skipHTTPFallback)
+		referrerMgr := referrer.NewManager(skipSSLVerify)
 		opts = append(opts, filesystem.WithReferrerManager(referrerMgr))
 	}
 
 	if cfg.Experimental.TarfsConfig.EnableTarfs {
-		tarfsMgr := tarfs.NewManager(skipSSLVerify, skipHTTPFallback, cfg.Experimental.TarfsConfig.TarfsHint,
+		tarfsMgr := tarfs.NewManager(skipSSLVerify, cfg.Experimental.TarfsConfig.TarfsHint,
 			cacheConfig.CacheDir, cfg.DaemonConfig.NydusImagePath,
 			int64(cfg.Experimental.TarfsConfig.MaxConcurrentProc))
 		opts = append(opts, filesystem.WithTarfsManager(tarfsMgr))
