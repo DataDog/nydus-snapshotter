@@ -10,13 +10,16 @@ import (
 	"context"
 
 	"github.com/containerd/log"
-	"github.com/containerd/nydus-snapshotter/pkg/auth"
 	"github.com/golang/groupcache/lru"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/containerd/nydus-snapshotter/pkg/auth"
 )
+
+var ErrNoNydusAlternative = errors.New("no alternative nydus descriptor found in index")
 
 type Manager struct {
 	insecure bool
@@ -45,7 +48,7 @@ func (manager *Manager) CheckIndexAlternative(ctx context.Context, ref string, m
 			if ok {
 				return &metaLayer, nil
 			}
-			return nil, nil
+			return nil, ErrNoNydusAlternative
 		}
 
 		keyChain, err := auth.GetKeyChainByRef(ref, nil)
@@ -70,13 +73,10 @@ func (manager *Manager) CheckIndexAlternative(ctx context.Context, ref string, m
 	})
 
 	logger := log.G(ctx).WithField("ref", ref).WithField("digest", manifestDigest.String())
-	if err != nil {
-		logger.WithError(err).Warn("index detection failed")
+	if err == ErrNoNydusAlternative {
 		return nil, err
-	}
-	if nydusDesc == nil {
-		err = errors.New("no alternative nydus descriptor found in index")
-		logger.WithError(err).Debug("nil nydus descriptor")
+	} else if err != nil {
+		logger.WithError(err).Warn("index detection failed")
 		return nil, err
 	}
 
