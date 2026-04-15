@@ -204,13 +204,13 @@ func selectMirrorHost(mirrorsConfigDir, registryHost string) (scheme string, hos
 			continue
 		}
 		if mirror.PingURL == "" {
-			return
+			return scheme, host
 		}
 		resp, pingErr := client.Get(mirror.PingURL)
 		if pingErr == nil {
 			resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				return
+				return scheme, host
 			}
 		}
 		log.L.Warnf("Mirror %s ping URL %s check failed, trying next mirror", mirror.Host, mirror.PingURL)
