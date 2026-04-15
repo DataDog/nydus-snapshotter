@@ -27,31 +27,72 @@ func writeMirrorHostsToml(t *testing.T, dir, content string) {
 
 func TestSplitMirrorURL(t *testing.T) {
 	cases := []struct {
+		name           string
 		input          string
 		expectedScheme string
 		expectedHost   string
+		expectErr      bool
 	}{
-		{"http://mirror:5000", "http", "mirror:5000"},
-		{"https://mirror.example.com", "https", "mirror.example.com"},
-		{"mirror.example.com", "", "mirror.example.com"},
-		{"mirror:5000", "", "mirror:5000"},
+		{
+			name:           "http with port",
+			input:          "http://mirror:5000",
+			expectedScheme: "http",
+			expectedHost:   "mirror:5000",
+		},
+		{
+			name:           "https without port",
+			input:          "https://mirror.example.com",
+			expectedScheme: "https",
+			expectedHost:   "mirror.example.com",
+		},
+		{
+			name:           "no scheme, host only",
+			input:          "mirror.example.com",
+			expectedScheme: "https",
+			expectedHost:   "mirror.example.com",
+		},
+		{
+			name:           "no scheme, host with port",
+			input:          "mirror:5000",
+			expectedScheme: "https",
+			expectedHost:   "mirror:5000",
+		},
+		{
+			name:           "https with port",
+			input:          "https://mirror.example.com:5000",
+			expectedScheme: "https",
+			expectedHost:   "mirror.example.com:5000",
+		},
+		{
+			name:           "http with path",
+			input:          "http://mirror.example.com/v2",
+			expectedScheme: "http",
+			expectedHost:   "mirror.example.com",
+		},
 	}
 	for _, tc := range cases {
-		scheme, host := splitMirrorURL(tc.input)
-		require.Equal(t, tc.expectedScheme, scheme, "scheme for %s", tc.input)
-		require.Equal(t, tc.expectedHost, host, "host for %s", tc.input)
+		t.Run(tc.name, func(t *testing.T) {
+			scheme, host, err := splitMirrorURL(tc.input)
+			if tc.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedScheme, scheme, "scheme for %s", tc.input)
+			require.Equal(t, tc.expectedHost, host, "host for %s", tc.input)
+		})
 	}
 }
 
 func TestSelectMirrorHost_NoConfig(t *testing.T) {
-	host, scheme := selectMirrorHost("", testRegistryHost)
+	scheme, host := selectMirrorHost("", testRegistryHost)
 	require.Equal(t, testRegistryHost, host)
 	require.Equal(t, "", scheme)
 }
 
 func TestSelectMirrorHost_EmptyDir(t *testing.T) {
 	tmpDir := t.TempDir()
-	host, scheme := selectMirrorHost(tmpDir, testRegistryHost)
+	scheme, host := selectMirrorHost(tmpDir, testRegistryHost)
 	require.Equal(t, testRegistryHost, host)
 	require.Equal(t, "", scheme)
 }
@@ -62,7 +103,7 @@ func TestSelectMirrorHost_MirrorNoPingURL(t *testing.T) {
 [host]
   [host."http://mirror1:5000"]
 `)
-	host, scheme := selectMirrorHost(tmpDir, testRegistryHost)
+	scheme, host := selectMirrorHost(tmpDir, testRegistryHost)
 	require.Equal(t, "mirror1:5000", host)
 	require.Equal(t, "http", scheme)
 }
@@ -79,7 +120,7 @@ func TestSelectMirrorHost_MirrorPingSucceeds(t *testing.T) {
   [host."http://mirror1:5000"]
     ping_url = "`+srv.URL+`"
 `)
-	host, scheme := selectMirrorHost(tmpDir, testRegistryHost)
+	scheme, host := selectMirrorHost(tmpDir, testRegistryHost)
 	require.Equal(t, "mirror1:5000", host)
 	require.Equal(t, "http", scheme)
 }
@@ -96,7 +137,7 @@ func TestSelectMirrorHost_MirrorPingFails_FallbackToOrigin(t *testing.T) {
   [host."http://mirror1:5000"]
     ping_url = "`+srv.URL+`"
 `)
-	host, scheme := selectMirrorHost(tmpDir, testRegistryHost)
+	scheme, host := selectMirrorHost(tmpDir, testRegistryHost)
 	require.Equal(t, testRegistryHost, host)
 	require.Equal(t, "", scheme)
 }
@@ -114,7 +155,7 @@ func TestSelectMirrorHost_FirstMirrorFails_SecondMirrorNoPing(t *testing.T) {
     ping_url = "`+srv.URL+`"
   [host."https://mirror2.example.com"]
 `)
-	host, scheme := selectMirrorHost(tmpDir, testRegistryHost)
+	scheme, host := selectMirrorHost(tmpDir, testRegistryHost)
 	require.Equal(t, "mirror2.example.com", host)
 	require.Equal(t, "https", scheme)
 }

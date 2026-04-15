@@ -9,7 +9,9 @@ package daemonconfig
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"reflect"
 	"strings"
@@ -161,7 +163,7 @@ func SupplementDaemonConfig(c DaemonConfig, imageID, snapshotID string,
 			registryHost = "index.docker.io"
 		}
 
-		effectiveHost, effectiveScheme := selectMirrorHost(config.GetMirrorsConfigDir(), registryHost)
+		effectiveScheme, effectiveHost := selectMirrorHost(config.GetMirrorsConfigDir(), registryHost)
 
 		// If no auth is provided, don't touch auth from provided nydusd configuration file.
 		// We don't validate the original nydusd auth from configuration file since it can be empty
@@ -187,7 +189,7 @@ func SupplementDaemonConfig(c DaemonConfig, imageID, snapshotID string,
 // selectMirrorHost loads mirror configs for the given registry host and returns the host and
 // scheme of the first reachable mirror. If a mirror has no PingURL it is used unconditionally.
 // Falls back to (registryHost, "") when no mirror is configured or reachable.
-func selectMirrorHost(mirrorsConfigDir, registryHost string) (string, string) {
+func selectMirrorHost(mirrorsConfigDir, registryHost string) (scheme string, host string) {
 	mirrors, err := LoadMirrorsConfig(mirrorsConfigDir, registryHost)
 	if err != nil {
 		log.L.Warnf("Failed to load mirrors config for %s: %v, falling back to origin", registryHost, err)
@@ -196,16 +198,19 @@ func selectMirrorHost(mirrorsConfigDir, registryHost string) (string, string) {
 
 	client := &http.Client{Timeout: 3 * time.Second}
 	for _, mirror := range mirrors {
+		scheme, host, err = splitMirrorURL(mirror.Host)
+		if err != nil {
+			err = fmt.Errorf("Skipping due to Failing to split mirror host %s: %w", mirror.Host, err)
+			continue
+		}
 		if mirror.PingURL == "" {
-			scheme, host := splitMirrorURL(mirror.Host)
-			return host, scheme
+			return
 		}
 		resp, pingErr := client.Get(mirror.PingURL)
 		if pingErr == nil {
 			resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				scheme, host := splitMirrorURL(mirror.Host)
-				return host, scheme
+				return
 			}
 		}
 		log.L.Warnf("Mirror %s ping URL %s check failed, trying next mirror", mirror.Host, mirror.PingURL)
@@ -215,12 +220,17 @@ func selectMirrorHost(mirrorsConfigDir, registryHost string) (string, string) {
 }
 
 // splitMirrorURL splits a mirror host URL (e.g. "http://mirror:5000") into scheme and bare host.
-// Returns ("", original) if no scheme is present.
-func splitMirrorURL(mirrorHost string) (scheme, host string) {
-	if idx := strings.Index(mirrorHost, "://"); idx >= 0 {
-		return mirrorHost[:idx], mirrorHost[idx+3:]
+// Scheme is forced to be https if not present.
+func splitMirrorURL(mirrorHost string) (scheme, host string, err error) {
+	// url.Parse requires a scheme to properly works even if it doesn't returns an error
+	if !(strings.HasPrefix(mirrorHost, "http://") || strings.HasPrefix(mirrorHost, "https://")) {
+		mirrorHost = "https://" + mirrorHost
 	}
-	return "", mirrorHost
+	value, err := url.Parse(mirrorHost)
+	if err != nil {
+		return "", "", err
+	}
+	return value.Scheme, value.Host, nil
 }
 
 func serializeWithSecretFilter(obj interface{}) map[string]interface{} {
