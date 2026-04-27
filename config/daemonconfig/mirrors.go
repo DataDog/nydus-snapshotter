@@ -204,7 +204,7 @@ func parseHostConfig(server string, config HostFileConfig) (hostConfig, error) {
 	return result, nil
 }
 
-func parseHostsFile(b []byte, baseDir string) ([]hostConfig, error) {
+func parseHostsFile(b []byte) ([]hostConfig, error) {
 	tree, err := toml.LoadBytes(b)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse TOML: %w", err)
@@ -251,7 +251,7 @@ func loadHostDir(hostsDir string) ([]hostConfig, error) {
 		return []hostConfig{}, nil
 	}
 
-	hosts, err := parseHostsFile(b, hostsDir)
+	hosts, err := parseHostsFile(b)
 	if err != nil {
 		return nil, err
 	}
