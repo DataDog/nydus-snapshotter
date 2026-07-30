@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"time"
@@ -135,7 +136,36 @@ func DumpConfigFile(c interface{}, path string) error {
 		return errors.Wrapf(err, "marshal config")
 	}
 
-	return os.WriteFile(path, b, 0600)
+	return atomicWriteFile(path, b)
+}
+
+// atomicWriteFile writes data to a tmp file in the same directory as path and
+// renames it over path. A concurrent reader, or a reader after the process is
+// killed mid-write, sees either the previous contents or the new contents,
+// never a truncated/empty file.
+func atomicWriteFile(path string, data []byte) (err error) {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return errors.Wrapf(err, "create tmp file in %s", filepath.Dir(path))
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		if err != nil {
+			os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err = tmp.Write(data); err != nil {
+		tmp.Close()
+		return errors.Wrapf(err, "write tmp file %s", tmpPath)
+	}
+	if err = tmp.Close(); err != nil {
+		return errors.Wrapf(err, "close tmp file %s", tmpPath)
+	}
+	if err = os.Rename(tmpPath, path); err != nil {
+		return errors.Wrapf(err, "rename tmp file to %s", path)
+	}
+	return nil
 }
 
 func DumpConfigString(c interface{}) (string, error) {
