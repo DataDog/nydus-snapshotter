@@ -37,6 +37,7 @@ import (
 	"github.com/containerd/nydus-snapshotter/pkg/index"
 	"github.com/containerd/nydus-snapshotter/pkg/label"
 	"github.com/containerd/nydus-snapshotter/pkg/manager"
+	"github.com/containerd/nydus-snapshotter/pkg/nbd"
 	racache "github.com/containerd/nydus-snapshotter/pkg/rafs"
 	"github.com/containerd/nydus-snapshotter/pkg/referrer"
 	"github.com/containerd/nydus-snapshotter/pkg/signature"
@@ -54,6 +55,7 @@ type Filesystem struct {
 	indexMgr            *index.Manager
 	stargzResolver      *stargz.Resolver
 	tarfsMgr            *tarfs.Manager
+	nbdMgr              *nbd.Manager
 	verifier            *signature.Verifier
 	nydusdBinaryPath    string
 	rootMountpoint      string
@@ -653,7 +655,24 @@ func (fs *Filesystem) Umount(_ context.Context, snapshotID string) error {
 		return nil
 	}
 
-	return fs.umountRafsInstances(rafsList)
+	if err := fs.umountRafsInstances(rafsList); err != nil {
+		return err
+	}
+
+	// The image is no longer used by any container: stop its NBD export.
+	if fs.nbdMgr != nil {
+		if err := fs.nbdMgr.Remove(nbdExportDir(snapshotID)); err != nil {
+			return errors.Wrapf(err, "remove NBD export of snapshot %s", snapshotID)
+		}
+	}
+	return nil
+}
+
+// nbdExportDir is where the NBD export of an image is tracked: the source
+// snapshot, shared by its id-mapped RAFS instances (a VM does not use host
+// id mappings, so they all export the same image).
+func nbdExportDir(sourceSnapshotID string) string {
+	return path.Join(config.GetSnapshotsRootDir(), sourceSnapshotID)
 }
 
 func (fs *Filesystem) UmountByLabels(_ context.Context, snapshotID string, labels map[string]string) error {
@@ -873,6 +892,43 @@ func (fs *Filesystem) MountPoint(snapshotID string) (string, error) {
 	}
 
 	return "", errdefs.ErrNotFound
+}
+
+// NBDEnabled reports whether nydus images are exported as NBD block devices.
+func (fs *Filesystem) NBDEnabled() bool {
+	return fs.nbdMgr != nil
+}
+
+// ExportNBD exports the image of a nydus snapshot as a read-only NBD block
+// device and returns the device path. The export is shared by all containers
+// of the image and lives until the image is unmounted.
+func (fs *Filesystem) ExportNBD(snapshotID string) (string, error) {
+	if fs.nbdMgr == nil {
+		return "", errors.New("NBD export is disabled")
+	}
+	rafs := racache.RafsGlobalCache.Get(snapshotID)
+	if rafs == nil {
+		return "", errors.Wrapf(errdefs.ErrNotFound, "no RAFS instance for snapshot %s", snapshotID)
+	}
+	d, err := fs.getDaemonByRafs(rafs)
+	if err != nil {
+		return "", errors.Wrapf(err, "get daemon of snapshot %s", snapshotID)
+	}
+	bootstrap, err := rafs.BootstrapFile()
+	if err != nil {
+		return "", err
+	}
+	return fs.nbdMgr.Export(nbdExportDir(rafs.GetSourceSnapshotID()), bootstrap, d.InstanceConfigFile(snapshotID))
+}
+
+// UpdateNBDAuth hot-reloads registry credentials of the NBD export of a
+// snapshot, if any.
+func (fs *Filesystem) UpdateNBDAuth(snapshotID, auth string) error {
+	rafs := racache.RafsGlobalCache.Get(snapshotID)
+	if fs.nbdMgr == nil || rafs == nil {
+		return nil
+	}
+	return fs.nbdMgr.UpdateAuth(nbdExportDir(rafs.GetSourceSnapshotID()), auth)
 }
 
 func (fs *Filesystem) BootstrapFile(id string) (string, error) {

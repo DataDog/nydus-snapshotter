@@ -17,20 +17,23 @@ import (
 	mgr "github.com/containerd/nydus-snapshotter/pkg/manager"
 )
 
+// updateNBDAuth hot-reloads credentials of the NBD export of a snapshot.
+type updateNBDAuth func(snapshotID, auth string) error
+
 // startCredentialRenewal initializes the credential store, runs an initial
 // reconciliation, and starts a background goroutine that periodically
-// renews credentials and hot-reloads running nydusd daemons.
-func startCredentialRenewal(ctx context.Context, interval time.Duration, managers []*mgr.Manager) {
+// renews credentials and hot-reloads running nydusd daemons and NBD exports.
+func startCredentialRenewal(ctx context.Context, interval time.Duration, managers []*mgr.Manager, nbdAuth updateNBDAuth) {
 	auth.InitCredentialStore(interval)
-	reconcileCredentials(ctx, managers)
+	reconcileCredentials(ctx, managers, nbdAuth)
 
 	log.G(ctx).WithField("interval", interval).Info("credential renewal initialized")
-	go credentialRenewalLoop(ctx, interval, managers)
+	go credentialRenewalLoop(ctx, interval, managers, nbdAuth)
 }
 
 // credentialRenewalLoop is the background goroutine that periodically
 // reconciles and renews credentials.
-func credentialRenewalLoop(ctx context.Context, interval time.Duration, managers []*mgr.Manager) {
+func credentialRenewalLoop(ctx context.Context, interval time.Duration, managers []*mgr.Manager, nbdAuth updateNBDAuth) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -39,7 +42,7 @@ func credentialRenewalLoop(ctx context.Context, interval time.Duration, managers
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			reconcileCredentials(ctx, managers)
+			reconcileCredentials(ctx, managers, nbdAuth)
 		}
 	}
 }
@@ -53,7 +56,7 @@ func credentialRenewalLoop(ctx context.Context, interval time.Duration, managers
 // - entry not in store, live in RAFS: add + hot-reload (fusedev only)
 // - entry not in store, not live in RAFS: nothing
 // - entry in store, not live in RAFS: evict
-func reconcileCredentials(ctx context.Context, managers []*mgr.Manager) {
+func reconcileCredentials(ctx context.Context, managers []*mgr.Manager, nbdAuth updateNBDAuth) {
 	live := make(map[string]struct{})
 
 	for _, m := range managers {
@@ -79,6 +82,14 @@ func reconcileCredentials(ctx context.Context, managers []*mgr.Manager) {
 				if err := d.UpdateAuthConfig(r.SnapshotID, kc); err != nil {
 					log.G(ctx).WithError(err).WithField("daemon", d.ID()).
 						Warn("failed to hot-reload auth config")
+				}
+				// UpdateAuthConfig rewrote the config file an NBD export restarts
+				// from; also refresh a running export.
+				if nbdAuth != nil && !kc.TokenBase() {
+					if err := nbdAuth(r.SnapshotID, kc.ToBase64()); err != nil {
+						log.G(ctx).WithError(err).WithField("snapshot", r.SnapshotID).
+							Warn("failed to hot-reload NBD export auth config")
+					}
 				}
 			}
 		}
