@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/containerd/containerd/v2/core/mount"
@@ -165,6 +166,22 @@ func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overla
 	}
 
 	return overlayMount(overlayOptions), nil
+}
+
+// mountWithNBDVolume passes the NBD device serving the image to VM runtimes as a Kata volume.
+// Volatile is dropped: containerd only drops it from its temporary mounts of the "overlay"
+// type, and a volatile mount makes the next ones of the snapshot fail.
+func (o *snapshotter) mountWithNBDVolume(overlayOptions []string, device string) ([]mount.Mount, error) {
+	volume, err := o.prepareKataVirtualVolume("", device, KataVirtualVolumeImageRawBlockType, "erofs", []string{"ro"}, nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "create kata volume for NBD device")
+	}
+	options := slices.DeleteFunc(overlayOptions, func(o string) bool { return o == "volatile" })
+	mountType := "fuse.nydus-overlayfs"
+	if o.nydusOverlayFSPath != "" {
+		mountType = "fuse." + o.nydusOverlayFSPath
+	}
+	return []mount.Mount{{Type: mountType, Source: KataVirtualVolumeDefaultSource, Options: append(options, volume)}}, nil
 }
 
 func (o *snapshotter) mountWithProxyVolume(rafs rafs.Rafs) ([]string, error) {

@@ -126,14 +126,33 @@ func (m *Manager) BuildDaemonCommand(d *daemon.Daemon, bin string, upgrade bool)
 
 	nydusdThreadNum := d.NydusdThreadNum()
 
-	if d.States.FsDriver == config.FsDriverFscache {
+	switch d.States.FsDriver {
+	case config.FsDriverFscache:
 		cmdOpts = append(cmdOpts,
 			command.WithMode("singleton"),
 			command.WithFscacheDriver(m.cacheDir))
 		if nydusdThreadNum != 0 {
 			cmdOpts = append(cmdOpts, command.WithFscacheThreads(nydusdThreadNum))
 		}
-	} else {
+	case config.FsDriverNbd:
+		rafs := d.RafsCache.Head()
+		if rafs == nil {
+			return nil, errors.Wrapf(errdefs.ErrNotFound, "daemon %s no rafs instance associated", d.ID())
+		}
+		if d.States.NBDDevice == "" {
+			return nil, errors.Errorf("daemon %s has no NBD device", d.ID())
+		}
+		bootstrap, err := rafs.BootstrapFile()
+		if err != nil {
+			return nil, errors.Wrapf(err, "locate bootstrap %s", bootstrap)
+		}
+		cmdOpts = append(cmdOpts,
+			command.WithMode("nbd"),
+			command.WithNBDDevice(d.States.NBDDevice),
+			command.WithConfig(d.ConfigFile("")),
+			command.WithBootstrap(bootstrap),
+		)
+	default:
 		cmdOpts = append(cmdOpts, command.WithMode("fuse"), command.WithMountpoint(d.HostMountpoint()))
 		if nydusdThreadNum != 0 {
 			cmdOpts = append(cmdOpts, command.WithThreadNum(nydusdThreadNum))
@@ -192,7 +211,8 @@ func (m *Manager) BuildDaemonCommand(d *daemon.Daemon, bin string, upgrade bool)
 		cmdOpts = append(cmdOpts, command.WithLogRotationSize(d.States.LogRotationSize))
 	}
 
-	if upgrade {
+	// A stateless daemon starts as a new daemon.
+	if upgrade && !d.Stateless() {
 		cmdOpts = append(cmdOpts, command.WithUpgrade())
 	}
 

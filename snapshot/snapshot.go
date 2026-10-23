@@ -102,7 +102,7 @@ func NewSnapshotter(ctx context.Context, cfg *config.SnapshotterConfig) (snapsho
 	var skipSSLVerify bool
 	var daemonConfig *daemonconfig.DaemonConfig
 	fsDriver := config.GetFsDriver()
-	if fsDriver == config.FsDriverFscache || fsDriver == config.FsDriverFusedev {
+	if config.UsesNydusd(fsDriver) {
 		config, err := daemonconfig.NewDaemonConfig(config.GetFsDriver(), cfg.DaemonConfig.NydusdConfigPath)
 		if err != nil {
 			return nil, errors.Wrap(err, "load daemon configuration")
@@ -149,19 +149,19 @@ func NewSnapshotter(ctx context.Context, cfg *config.SnapshotterConfig) (snapsho
 		fsManagers = append(fsManagers, fscacheManager)
 	}
 
-	if config.GetFsDriver() == config.FsDriverFusedev {
+	if d := config.GetFsDriver(); d == config.FsDriverFusedev || d == config.FsDriverNbd {
 		fusedevManager, err := mgr.NewManager(mgr.Opt{
 			NydusdBinaryPath: cfg.DaemonConfig.NydusdPath,
 			Database:         db,
 			CacheDir:         cfg.CacheManagerConfig.CacheDir,
 			RootDir:          cfg.Root,
 			RecoverPolicy:    rp,
-			FsDriver:         config.FsDriverFusedev,
+			FsDriver:         d,
 			DaemonConfig:     daemonConfig,
 			CgroupMgr:        cgroupMgr,
 		})
 		if err != nil {
-			return nil, errors.Wrap(err, "create fusedev manager")
+			return nil, errors.Wrapf(err, "create %s manager", d)
 		}
 		fsManagers = append(fsManagers, fusedevManager)
 	}
@@ -1212,6 +1212,12 @@ func (o *snapshotter) mountRemote(ctx context.Context, labels map[string]string,
 		}
 	}
 
+	// Layers stacked on the image cannot be attached with its NBD device.
+	if s.Kind == snapshots.KindActive && len(lowerPaths) == 1 {
+		if device := o.fs.NBDDevice(id); device != "" {
+			return o.mountWithNBDVolume(overlayOptions, device)
+		}
+	}
 	if o.enableKataVolume {
 		return o.mountWithKataVolume(ctx, id, overlayOptions, key)
 	}
@@ -1397,7 +1403,7 @@ func collectUsedCacheBlobIDs(instances []*rafs.Rafs) (map[string]bool, bool) {
 	complete := true
 	for _, instance := range instances {
 		fsDriver := instance.GetFsDriver()
-		if fsDriver != config.FsDriverFscache && fsDriver != config.FsDriverFusedev {
+		if !config.UsesNydusd(fsDriver) {
 			// Only blobcache-backed drivers materialize files in the cache
 			// directory; other drivers never populate UnderlyingFiles.
 			continue
@@ -1428,7 +1434,7 @@ func (o *snapshotter) reconcileUnknownCacheUsage() {
 		for _, d := range fsManager.ListDaemons() {
 			for snapshotID, instance := range d.RafsCache.List() {
 				fsDriver := instance.GetFsDriver()
-				if fsDriver != config.FsDriverFscache && fsDriver != config.FsDriverFusedev {
+				if !config.UsesNydusd(fsDriver) {
 					continue
 				}
 				if len(instance.UnderlyingFiles) != 0 {

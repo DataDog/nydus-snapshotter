@@ -116,7 +116,13 @@ const (
 	FsDriverFscache  string = constant.FsDriverFscache
 	FsDriverNodev    string = constant.FsDriverNodev
 	FsDriverProxy    string = constant.FsDriverProxy
+	FsDriverNbd      string = constant.FsDriverNbd
 )
+
+// UsesNydusd reports whether filesystem driver fsDriver serves images through nydusd daemons.
+func UsesNydusd(fsDriver string) bool {
+	return fsDriver == FsDriverFscache || fsDriver == FsDriverFusedev || fsDriver == FsDriverNbd
+}
 
 const (
 	FailoverPolicyNone   string = constant.FailoverPolicyNone
@@ -147,14 +153,21 @@ type CgroupConfig struct {
 
 // Configure how to start and recover nydusd daemons
 type DaemonConfig struct {
-	NydusdPath       string `toml:"nydusd_path"`
-	NydusdConfigPath string `toml:"nydusd_config"`
-	NydusImagePath   string `toml:"nydusimage_path"`
-	RecoverPolicy    string `toml:"recover_policy"`
-	FsDriver         string `toml:"fs_driver"`
-	ThreadsNumber    int    `toml:"threads_number"`
-	LogRotationSize  int    `toml:"log_rotation_size"`
-	FailoverPolicy   string `toml:"failover_policy"`
+	NydusdPath       string    `toml:"nydusd_path"`
+	NydusdConfigPath string    `toml:"nydusd_config"`
+	NydusImagePath   string    `toml:"nydusimage_path"`
+	RecoverPolicy    string    `toml:"recover_policy"`
+	FsDriver         string    `toml:"fs_driver"`
+	ThreadsNumber    int       `toml:"threads_number"`
+	LogRotationSize  int       `toml:"log_rotation_size"`
+	FailoverPolicy   string    `toml:"failover_policy"`
+	NBDConfig        NBDConfig `toml:"nbd"`
+}
+
+// Block queue limits of the NBD devices of the nbd driver, in KiB. Zero keeps the kernel default.
+type NBDConfig struct {
+	MaxSectorsKB int `toml:"max_sectors_kb"`
+	ReadAheadKB  int `toml:"read_ahead_kb"`
 }
 
 type LoggingConfig struct {
@@ -328,7 +341,7 @@ func ValidateConfig(c *SnapshotterConfig) error {
 
 	if c.DaemonConfig.FsDriver != FsDriverFscache && c.DaemonConfig.FsDriver != FsDriverFusedev &&
 		c.DaemonConfig.FsDriver != FsDriverBlockdev && c.DaemonConfig.FsDriver != FsDriverNodev &&
-		c.DaemonConfig.FsDriver != FsDriverProxy {
+		c.DaemonConfig.FsDriver != FsDriverProxy && c.DaemonConfig.FsDriver != FsDriverNbd {
 		return errors.Errorf("invalid filesystem driver %q", c.DaemonConfig.FsDriver)
 	}
 	if _, err := ParseRecoverPolicy(c.DaemonConfig.RecoverPolicy); err != nil {
