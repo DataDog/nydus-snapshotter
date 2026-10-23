@@ -559,19 +559,25 @@ func (d *Daemon) GetInflightMetrics() (*types.InflightMetrics, error) {
 	return c.GetInflightMetrics()
 }
 
+// InstanceConfigFile returns the nydusd configuration file used by the RAFS
+// instance of a snapshot.
+func (d *Daemon) InstanceConfigFile(snapshotID string) string {
+	if d.IsSharedDaemon() {
+		return d.ConfigFile(snapshotID)
+	}
+	return d.ConfigFile("")
+}
+
 // UpdateAuthConfig updates the registry auth for the given rafs instance.
 // It rewrites the daemon config file on disk and, for basic auth, issues a
 // PUT /api/v1/config to hot-reload the credential in the running nydusd.
 // Bearer tokens are only persisted to disk (nydusd does not support runtime
 // token updates).
 func (d *Daemon) UpdateAuthConfig(snapshotID string, kc *auth.PassKeyChain) error {
-	var configFile, apiID string
+	configFile := d.InstanceConfigFile(snapshotID)
+	apiID := "/"
 	if d.IsSharedDaemon() {
-		configFile = d.ConfigFile(snapshotID)
 		apiID = "/" + snapshotID
-	} else {
-		configFile = d.ConfigFile("")
-		apiID = "/"
 	}
 
 	cfg, err := daemonconfig.NewDaemonConfig(d.States.FsDriver, configFile)

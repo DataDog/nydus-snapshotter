@@ -36,6 +36,7 @@ import (
 	"github.com/containerd/nydus-snapshotter/pkg/metrics"
 	"github.com/containerd/nydus-snapshotter/pkg/metrics/collector"
 	"github.com/containerd/nydus-snapshotter/pkg/metrics/data"
+	"github.com/containerd/nydus-snapshotter/pkg/nbd"
 	"github.com/containerd/nydus-snapshotter/pkg/pprof"
 	"github.com/containerd/nydus-snapshotter/pkg/referrer"
 	"github.com/containerd/nydus-snapshotter/pkg/system"
@@ -244,6 +245,14 @@ func NewSnapshotter(ctx context.Context, cfg *config.SnapshotterConfig) (snapsho
 		opts = append(opts, filesystem.WithTarfsManager(tarfsMgr))
 	}
 
+	if nbdCfg := cfg.Experimental.NBDConfig; nbdCfg.Enable {
+		nydusdPath := nbdCfg.NydusdPath
+		if nydusdPath == "" {
+			nydusdPath = cfg.DaemonConfig.NydusdPath
+		}
+		opts = append(opts, filesystem.WithNBDManager(nbd.NewManager(nydusdPath)))
+	}
+
 	nydusFs, err := filesystem.NewFileSystem(ctx, opts...)
 	if err != nil {
 		return nil, errors.Wrap(err, "initialize filesystem thin layer")
@@ -253,7 +262,7 @@ func NewSnapshotter(ctx context.Context, cfg *config.SnapshotterConfig) (snapsho
 	// and populates the daemon caches from the DB. Starting earlier would cause
 	// the initial reconciliation to see empty managers on restart.
 	if interval := cfg.RemoteConfig.AuthConfig.CredentialRenewalInterval; interval > 0 {
-		startCredentialRenewal(ctx, interval, fsManagers)
+		startCredentialRenewal(ctx, interval, fsManagers, nydusFs.UpdateNBDAuth)
 	}
 
 	if config.IsSystemControllerEnabled() {
@@ -1212,8 +1221,21 @@ func (o *snapshotter) mountRemote(ctx context.Context, labels map[string]string,
 		}
 	}
 
+	// Describe the image of a container rootfs as an NBD block device, for
+	// VM runtimes to attach to the guest. A block device cannot represent
+	// other layers stacked on the image: those keep the regular mount.
+	if s.Kind == snapshots.KindActive && o.fs.NBDEnabled() && len(lowerPaths) == 1 {
+		mounts, err := o.mountWithKataVolume(ctx, id, overlayOptions, key, true)
+		if err == nil {
+			return mounts, nil
+		}
+		// Containers that do not run in a VM must not fail because of it;
+		// VM runtimes fall back to sharing the rootfs.
+		log.G(ctx).WithError(err).Errorf("NBD export of snapshot %s failed, using the regular mount", id)
+	}
+
 	if o.enableKataVolume {
-		return o.mountWithKataVolume(ctx, id, overlayOptions, key)
+		return o.mountWithKataVolume(ctx, id, overlayOptions, key, false)
 	}
 	// Add `extraoption` if NydusOverlayFS is enable or daemonMode is `None`
 	if o.enableNydusOverlayFS || config.GetDaemonMode() == config.DaemonModeNone {

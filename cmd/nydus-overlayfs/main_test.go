@@ -198,6 +198,27 @@ func TestParseArgs(t *testing.T) {
 			expectedOptions: []string{"lowerdir=/a:/b", "ro"},
 		},
 		{
+			name:            "drops volatile from read-only mounts",
+			args:            []string{"overlay", "/tmp/merged", "-o", "volatile,lowerdir=/a,upperdir=/c,workdir=/d,extraoption=abc123,ro,dev,suid"},
+			expectedType:    "overlay",
+			expectedTarget:  "/tmp/merged",
+			expectedOptions: []string{"lowerdir=/a", "upperdir=/c", "workdir=/d", "ro", "dev", "suid"},
+		},
+		{
+			name:            "drops fsync=volatile from read-only mounts",
+			args:            []string{"overlay", "/tmp/merged", "-o", "fsync=volatile,lowerdir=/a,upperdir=/c,workdir=/d,ro"},
+			expectedType:    "overlay",
+			expectedTarget:  "/tmp/merged",
+			expectedOptions: []string{"lowerdir=/a", "upperdir=/c", "workdir=/d", "ro"},
+		},
+		{
+			name:            "keeps volatile on read-write mounts",
+			args:            []string{"overlay", "/tmp/merged", "-o", "volatile,lowerdir=/a,upperdir=/c,workdir=/d"},
+			expectedType:    "overlay",
+			expectedTarget:  "/tmp/merged",
+			expectedOptions: []string{"volatile", "lowerdir=/a", "upperdir=/c", "workdir=/d"},
+		},
+		{
 			name:      "invalid fs type",
 			args:      []string{"ext4", "/tmp/merged", "-o", "lowerdir=/a"},
 			expectErr: true,

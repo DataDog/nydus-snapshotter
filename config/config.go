@@ -130,6 +130,19 @@ type Experimental struct {
 	EnableIndexDetect    bool        `toml:"enable_index_detect"`
 	TarfsConfig          TarfsConfig `toml:"tarfs"`
 	EnableBackendSource  bool        `toml:"enable_backend_source"`
+	NBDConfig            NBDConfig   `toml:"nbd"`
+}
+
+// NBDConfig exports the image of nydus container rootfs as a read-only NBD
+// block device, described in the rootfs mount as an `image_raw_block` Kata
+// virtual volume (see pkg/nbd). Kata attaches the device to the guest instead
+// of sharing the FUSE mount; other runtimes mount through nydus-overlayfs,
+// which ignores the volume.
+type NBDConfig struct {
+	Enable bool `toml:"enable"`
+	// NydusdPath is a nydusd built with the block-nbd feature. Defaults to
+	// daemon.nydusd_path.
+	NydusdPath string `toml:"nydusd_path"`
 }
 
 type TarfsConfig struct {

@@ -114,7 +114,7 @@ func (o *snapshotter) remoteMountWithExtraOptions(ctx context.Context, s storage
 	}, nil
 }
 
-func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overlayOptions []string, key string) ([]mount.Mount, error) {
+func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overlayOptions []string, key string, nbd bool) ([]mount.Mount, error) {
 	hasVolume := false
 	rafs := rafs.RafsGlobalCache.Get(id)
 	if rafs == nil {
@@ -143,6 +143,20 @@ func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overla
 			overlayOptions = append(overlayOptions, options...)
 			hasVolume = true
 		}
+	}
+
+	// Insert Kata volume for the image exported as an NBD block device
+	if nbd {
+		device, err := o.fs.ExportNBD(id)
+		if err != nil {
+			return []mount.Mount{}, errors.Wrapf(err, "export snapshot %s over NBD", id)
+		}
+		opt, err := o.prepareKataVirtualVolume("", device, KataVirtualVolumeImageRawBlockType, "erofs", []string{"ro"}, nil)
+		if err != nil {
+			return []mount.Mount{}, errors.Wrapf(err, "create kata volume for NBD export")
+		}
+		overlayOptions = append(overlayOptions, opt)
+		hasVolume = true
 	}
 
 	if hasVolume {
