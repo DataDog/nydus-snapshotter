@@ -36,7 +36,7 @@ func setup(t *testing.T, devices ...string) (*Manager, string) {
 	root := t.TempDir()
 	sys := filepath.Join(root, "sys")
 	for _, d := range devices {
-		require.NoError(t, os.MkdirAll(filepath.Join(sys, d), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(sys, d, "queue"), 0o755))
 	}
 	bin := filepath.Join(root, "nydusd")
 	require.NoError(t, os.WriteFile(bin, []byte(fakeNydusd), 0o755))
@@ -48,7 +48,7 @@ func setup(t *testing.T, devices ...string) (*Manager, string) {
 
 	snapshotDir := filepath.Join(root, "snapshots", "1")
 	require.NoError(t, os.MkdirAll(snapshotDir, 0o755))
-	return NewManager(bin), snapshotDir
+	return NewManager(bin, 0), snapshotDir
 }
 
 func processAlive(pid int) bool {
@@ -183,6 +183,42 @@ func TestStateAlive(t *testing.T) {
 				require.NoError(t, os.WriteFile(pidFile, []byte(tt.DevicePid+"\n"), 0o644))
 			}
 			assert.Equal(t, tt.Want, tt.State.alive())
+		})
+	}
+}
+
+func TestExportMaxSectorsKB(t *testing.T) {
+	tests := []struct {
+		Name         string
+		MaxSectorsKB int
+		// NoQueueDir makes writing queue/max_sectors_kb fail.
+		NoQueueDir bool
+		Want       string
+	}{
+		{Name: "Default", MaxSectorsKB: 0, Want: strconv.Itoa(DefaultMaxSectorsKB)},
+		{Name: "Configured", MaxSectorsKB: 1024, Want: "1024"},
+		{Name: "WriteFailureKeepsExport", MaxSectorsKB: 1024, NoQueueDir: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.Name, func(t *testing.T) {
+			m, snapshotDir := setup(t, "nbd0")
+			m = NewManager(m.nydusdPath, tt.MaxSectorsKB)
+			if tt.NoQueueDir {
+				require.NoError(t, os.RemoveAll(filepath.Join(sysBlockDir, "nbd0", "queue")))
+			}
+
+			device, err := m.Export(snapshotDir, "/boot", "/config.json")
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = m.Remove(snapshotDir) })
+			assert.Equal(t, "/dev/nbd0", device)
+
+			b, err := os.ReadFile(filepath.Join(sysBlockDir, "nbd0", "queue", "max_sectors_kb"))
+			if tt.NoQueueDir {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.Want, string(b))
 		})
 	}
 }

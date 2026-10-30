@@ -250,7 +250,7 @@ func NewSnapshotter(ctx context.Context, cfg *config.SnapshotterConfig) (snapsho
 		if nydusdPath == "" {
 			nydusdPath = cfg.DaemonConfig.NydusdPath
 		}
-		opts = append(opts, filesystem.WithNBDManager(nbd.NewManager(nydusdPath)))
+		opts = append(opts, filesystem.WithNBDManager(nbd.NewManager(nydusdPath, nbdCfg.MaxSectorsKB)))
 	}
 
 	nydusFs, err := filesystem.NewFileSystem(ctx, opts...)
