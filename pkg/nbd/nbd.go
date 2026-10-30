@@ -42,6 +42,12 @@ const (
 	readyTimeout = 10 * time.Second
 	stopTimeout  = 5 * time.Second
 	pollInterval = 20 * time.Millisecond
+
+	// DefaultMaxSectorsKB replaces the kernel default of 128 KiB: a request
+	// served by nydusd costs a backend round trip per missing range, and larger
+	// requests make fewer, larger fetches (cold reads of an image went from
+	// ~120 to ~430 MiB/s with 8 parallel readers).
+	DefaultMaxSectorsKB = 4096
 )
 
 var (
@@ -53,7 +59,8 @@ var (
 
 // Manager starts and stops `nydusd nbd` exports.
 type Manager struct {
-	nydusdPath string
+	nydusdPath   string
+	maxSectorsKB int
 	// mu serializes device allocation and per-snapshot state changes; exports
 	// are created once per image so contention is negligible.
 	mu sync.Mutex
@@ -65,8 +72,13 @@ type state struct {
 	Pid    int    `json:"pid"`
 }
 
-func NewManager(nydusdPath string) *Manager {
-	return &Manager{nydusdPath: nydusdPath}
+// NewManager returns a Manager starting exports with nydusdPath. maxSectorsKB
+// bounds the size of the requests sent to exports, 0 meaning DefaultMaxSectorsKB.
+func NewManager(nydusdPath string, maxSectorsKB int) *Manager {
+	if maxSectorsKB <= 0 {
+		maxSectorsKB = DefaultMaxSectorsKB
+	}
+	return &Manager{nydusdPath: nydusdPath, maxSectorsKB: maxSectorsKB}
 }
 
 func stateDir(snapshotDir string) string {
@@ -128,6 +140,10 @@ func (m *Manager) Export(snapshotDir, bootstrap, configFile string) (string, err
 	if err := writeState(dir, st); err != nil {
 		stopProcess(st.Pid, exited)
 		return "", err
+	}
+	// Only a tuning: the export works with the kernel default.
+	if err := setMaxSectorsKB(device, m.maxSectorsKB); err != nil {
+		log.L.WithError(err).Warnf("set max_sectors_kb of %s", device)
 	}
 	log.L.Infof("exported RAFS %s on %s (pid %d)", bootstrap, device, st.Pid)
 	return device, nil
@@ -227,6 +243,13 @@ func (st state) waitReady(exited <-chan struct{}) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+// setMaxSectorsKB sets the largest request the kernel sends to device. The
+// kernel rejects values above queue/max_hw_sectors_kb.
+func setMaxSectorsKB(device string, kb int) error {
+	p := filepath.Join(sysBlockDir, filepath.Base(device), "queue", "max_sectors_kb")
+	return errors.Wrap(os.WriteFile(p, []byte(strconv.Itoa(kb)), 0o644), "write "+p)
 }
 
 // devicePid returns the id of the server thread attached to an NBD device, or

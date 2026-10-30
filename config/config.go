@@ -143,6 +143,9 @@ type NBDConfig struct {
 	// NydusdPath is a nydusd built with the block-nbd feature. Defaults to
 	// daemon.nydusd_path.
 	NydusdPath string `toml:"nydusd_path"`
+	// MaxSectorsKB is the largest request the kernel sends to an export, in KiB
+	// (queue/max_sectors_kb of the NBD device). Defaults to nbd.DefaultMaxSectorsKB.
+	MaxSectorsKB int `toml:"max_sectors_kb"`
 }
 
 type TarfsConfig struct {

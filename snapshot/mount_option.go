@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/containerd/containerd/v2/core/mount"
@@ -160,6 +161,7 @@ func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overla
 	}
 
 	if hasVolume {
+		overlayOptions = withoutVolatile(overlayOptions)
 		log.G(ctx).Debugf("fuse.nydus-overlayfs mount options %v", overlayOptions)
 
 		mountType := "fuse.nydus-overlayfs"
@@ -179,6 +181,19 @@ func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overla
 	}
 
 	return overlayMount(overlayOptions), nil
+}
+
+// withoutVolatile drops the volatile overlay option. containerd temporarily
+// mounts a container rootfs, read-write then read-only, before the runtime
+// mounts it (e.g. to copy image volumes, then to resolve users), and drops
+// volatile from those mounts itself, but only for the "overlay" type. A
+// volatile fuse.nydus-overlayfs temporary mount leaves the incompat/volatile
+// marker in the workdir, and the kernel then refuses every following mount of
+// the snapshot with EINVAL, so the container cannot be created.
+func withoutVolatile(options []string) []string {
+	return slices.DeleteFunc(options, func(o string) bool {
+		return o == "volatile"
+	})
 }
 
 func (o *snapshotter) mountWithProxyVolume(rafs rafs.Rafs) ([]string, error) {
