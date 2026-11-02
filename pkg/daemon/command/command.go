@@ -38,6 +38,9 @@ type DaemonCommand struct {
 	PrefetchFiles   string `type:"param" name:"prefetch-files"`
 	BackendSource   string `type:"param" name:"backend-source"`
 	FailoverPolicy  string `type:"param" name:"failover-policy"`
+	// nydusd nbd options
+	NBDThreads string `type:"param" name:"threads"`
+	NBDDevice  string `type:"positional"`
 }
 
 // Build exec style command line
@@ -50,6 +53,7 @@ func BuildCommand(opts []Opt) ([]string, error) {
 	}
 
 	args := make([]string, 0, 32)
+	var positionals []string
 	t := reflect.TypeOf(cmd)
 	v := reflect.ValueOf(cmd)
 
@@ -68,6 +72,10 @@ func BuildCommand(opts []Opt) ([]string, error) {
 
 			pair := []string{fmt.Sprintf("--%s", tag.Get("name")), fmt.Sprintf("%v", value)}
 			args = append(args, pair...)
+		case "positional":
+			if !v.Field(i).IsZero() {
+				positionals = append(positionals, v.Field(i).String())
+			}
 		case "subcommand":
 			// Zero value will be skipped appending to command line
 			if v.Field(i).IsZero() {
@@ -93,6 +101,8 @@ func BuildCommand(opts []Opt) ([]string, error) {
 			return nil, errors.Errorf("unknown tag type: %s ", argType)
 		}
 	}
+
+	args = append(args, positionals...)
 
 	if subcommand != "" {
 		// Ensure subcommand is at the first place.
@@ -189,6 +199,20 @@ func WithID(id string) Opt {
 func WithUpgrade() Opt {
 	return func(cmd *DaemonCommand) {
 		cmd.Upgrade = true
+	}
+}
+
+// WithNBDDevice sets the NBD device nydusd nbd serves, e.g. /dev/nbd3.
+func WithNBDDevice(device string) Opt {
+	return func(cmd *DaemonCommand) {
+		cmd.NBDDevice = device
+	}
+}
+
+// WithNBDThreads sets the number of connections nydusd nbd serves the device with.
+func WithNBDThreads(num int) Opt {
+	return func(cmd *DaemonCommand) {
+		cmd.NBDThreads = strconv.Itoa(num)
 	}
 }
 

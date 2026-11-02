@@ -11,7 +11,6 @@ import (
 	"github.com/containerd/nydus-snapshotter/pkg/cache"
 	"github.com/containerd/nydus-snapshotter/pkg/index"
 	"github.com/containerd/nydus-snapshotter/pkg/manager"
-	"github.com/containerd/nydus-snapshotter/pkg/nbd"
 	"github.com/containerd/nydus-snapshotter/pkg/referrer"
 	"github.com/containerd/nydus-snapshotter/pkg/signature"
 	"github.com/containerd/nydus-snapshotter/pkg/stargz"
@@ -69,16 +68,6 @@ func WithIndexManager(im *index.Manager) NewFSOpt {
 		}
 
 		fs.indexMgr = im
-		return nil
-	}
-}
-
-func WithNBDManager(m *nbd.Manager) NewFSOpt {
-	return func(fs *Filesystem) error {
-		if m == nil {
-			return errors.New("nbd manager cannot be nil")
-		}
-		fs.nbdMgr = m
 		return nil
 	}
 }

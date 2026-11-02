@@ -61,6 +61,9 @@ type ConfigState struct {
 	FailoverPolicy  string
 	// Where the configuration file resides, all rafs instances share the same configuration template
 	ConfigDir string
+	// NBD device served by a daemon of the nbd driver, e.g. /dev/nbd3. The device outlives the
+	// daemon, a daemon taking over after a crash or an upgrade serves the same device.
+	NBDDevice string `json:",omitempty"`
 }
 
 // TODO: Record queried nydusd state
@@ -464,7 +467,8 @@ func (d *Daemon) UmountRafsInstances() error {
 
 func (d *Daemon) SendStates() {
 	su := d.Supervisor
-	if su != nil {
+	// NBD daemons keep no state, the kernel does.
+	if su != nil && d.States.FsDriver != config.FsDriverNbd {
 		// TODO: This should be optional by checking snapshotter's configuration.
 		// FIXME: Is it possible the states are overwritten during two API mounts.
 		// FIXME: What if nydusd does not support sending states.
@@ -559,25 +563,19 @@ func (d *Daemon) GetInflightMetrics() (*types.InflightMetrics, error) {
 	return c.GetInflightMetrics()
 }
 
-// InstanceConfigFile returns the nydusd configuration file used by the RAFS
-// instance of a snapshot.
-func (d *Daemon) InstanceConfigFile(snapshotID string) string {
-	if d.IsSharedDaemon() {
-		return d.ConfigFile(snapshotID)
-	}
-	return d.ConfigFile("")
-}
-
 // UpdateAuthConfig updates the registry auth for the given rafs instance.
 // It rewrites the daemon config file on disk and, for basic auth, issues a
 // PUT /api/v1/config to hot-reload the credential in the running nydusd.
 // Bearer tokens are only persisted to disk (nydusd does not support runtime
 // token updates).
 func (d *Daemon) UpdateAuthConfig(snapshotID string, kc *auth.PassKeyChain) error {
-	configFile := d.InstanceConfigFile(snapshotID)
-	apiID := "/"
+	var configFile, apiID string
 	if d.IsSharedDaemon() {
+		configFile = d.ConfigFile(snapshotID)
 		apiID = "/" + snapshotID
+	} else {
+		configFile = d.ConfigFile("")
+		apiID = "/"
 	}
 
 	cfg, err := daemonconfig.NewDaemonConfig(d.States.FsDriver, configFile)
@@ -707,14 +705,17 @@ func (d *Daemon) Wait() error {
 // When daemon dies, clean up its vestige before start a new one.
 func (d *Daemon) ClearVestige() {
 	mounter := mount.Mounter{}
-	if d.States.FsDriver == config.FsDriverFscache {
+	switch d.States.FsDriver {
+	case config.FsDriverNbd:
+		// Keep the EROFS mount of the device: a new daemon takes the device over.
+	case config.FsDriverFscache:
 		instances := d.RafsCache.List()
 		for _, i := range instances {
 			if err := mounter.Umount(i.GetMountpoint()); err != nil {
 				log.L.Warnf("Can't umount %s, %v", d.States.Mountpoint, err)
 			}
 		}
-	} else {
+	default:
 		log.L.Infof("Unmounting %s when clear vestige", d.HostMountpoint())
 		if err := mounter.Umount(d.HostMountpoint()); err != nil {
 			log.L.Warnf("Can't umount %s, %v", d.States.Mountpoint, err)

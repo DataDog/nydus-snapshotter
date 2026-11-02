@@ -13,6 +13,7 @@ import (
 	"github.com/containerd/nydus-snapshotter/internal/constant"
 	"github.com/containerd/nydus-snapshotter/internal/flags"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoadSnapshotterTOMLConfig(t *testing.T) {
@@ -282,4 +283,20 @@ func TestProcessConfigurations(t *testing.T) {
 	A.NoError(err)
 	err = ValidateConfig(&snapshotterConfig4)
 	A.Error(err)
+}
+
+func TestNBDDriverConfig(t *testing.T) {
+	cfg := &SnapshotterConfig{
+		Version:    1,
+		Root:       t.TempDir(),
+		DaemonMode: string(DaemonModeDedicated),
+		DaemonConfig: DaemonConfig{
+			FsDriver:       FsDriverNbd,
+			RecoverPolicy:  RecoverPolicyFailover.String(),
+			FailoverPolicy: FailoverPolicyResend,
+		},
+	}
+	require.NoError(t, ValidateConfig(cfg), "driver must be accepted")
+	require.NoError(t, ProcessConfigurations(cfg))
+	assert.Equal(t, FsDriverNbd, GetFsDriver())
 }

@@ -9,6 +9,7 @@ package manager
 
 import (
 	"fmt"
+	"os/exec"
 	"path"
 	"regexp"
 	"strconv"
@@ -63,7 +64,12 @@ func (m *Manager) handleDaemonDeathEvent() {
 			go m.doDaemonRestart(d)
 		case config.RecoverPolicyFailover:
 			log.L.Infof("Do failover for daemon %s", ev.daemonID)
-			go m.doDaemonFailover(d)
+			if d.States.FsDriver == config.FsDriverNbd {
+				// NBD daemons keep no state: a new daemon takes the device over when started.
+				go m.doDaemonRestart(d)
+			} else {
+				go m.doDaemonFailover(d)
+			}
 		default:
 			// RecoverPolicyNone or RecoverPolicyInvalid - do nothing
 		}
@@ -159,9 +165,21 @@ func (m *Manager) DoDaemonUpgrade(d *daemon.Daemon, nydusdPath string, manager *
 	upgradingSocket := path.Join(path.Dir(d.GetAPISock()), next)
 	newDaemon.States.APISocket = upgradingSocket
 
-	cmd, err := manager.BuildDaemonCommand(newDaemon, nydusdPath, true)
+	nbd := d.States.FsDriver == config.FsDriverNbd
+	cmd, err := manager.BuildDaemonCommand(newDaemon, nydusdPath, !nbd)
 	if err != nil {
 		return nil, err
+	}
+
+	if nbd {
+		if err := manager.UpgradeNBDDaemon(d, newDaemon, cmd); err != nil {
+			return nil, err
+		}
+		if err := manager.UpdateDaemon(newDaemon); err != nil {
+			return nil, err
+		}
+		log.L.Infof("Upgraded daemon success on socket %s", newDaemon.GetAPISock())
+		return newDaemon, nil
 	}
 
 	if err := supervisor.SendStatesTimeout(time.Second * 10); err != nil {
@@ -221,6 +239,32 @@ func (m *Manager) DoDaemonUpgrade(d *daemon.Daemon, nydusdPath string, manager *
 
 	log.L.Infof("Upgraded daemon success on socket %s", newDaemon.GetAPISock())
 	return newDaemon, err
+}
+
+// UpgradeNBDDaemon replaces daemon d of the nbd driver by newDaemon, started by cmd. NBD daemons
+// keep no state: d exits keeping its device configured, newDaemon takes the device over when it
+// starts. The kernel queues the requests to the device meanwhile.
+func (m *Manager) UpgradeNBDDaemon(d, newDaemon *daemon.Daemon, cmd *exec.Cmd) error {
+	if err := m.UnsubscribeDaemonEvent(d); err != nil {
+		return errors.Wrap(err, "unsubscribe daemon event")
+	}
+	if err := d.Exit(); err != nil {
+		return errors.Wrap(err, "old daemon exits")
+	}
+	if err := d.WaitForExit(); err != nil {
+		log.L.Warnf("wait old daemon %s exit failed: %v", d.ID(), err)
+	}
+	if err := cmd.Start(); err != nil {
+		return errors.Wrap(err, "start process")
+	}
+	newDaemon.States.ProcessID = cmd.Process.Pid
+	if err := daemon.WaitUntilSocketExisted(newDaemon.GetAPISock(), newDaemon.States.ProcessID); err != nil {
+		return errors.Wrap(err, "wait for API socket")
+	}
+	if err := m.SubscribeDaemonEvent(newDaemon); err != nil {
+		return errors.Wrap(err, "subscribe new daemon event")
+	}
+	return errors.Wrapf(newDaemon.WaitUntilState(types.DaemonStateRunning), "wait for daemon %s", d.ID())
 }
 
 // Name next api socket path based on currently api socket path listened on.

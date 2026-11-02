@@ -106,6 +106,14 @@ func WithFsDriver(fsDriver string) NewDaemonOpt {
 	}
 }
 
+// WithNBDDevice sets the NBD device a daemon of the nbd driver serves.
+func WithNBDDevice(device string) NewDaemonOpt {
+	return func(d *Daemon) error {
+		d.States.NBDDevice = device
+		return nil
+	}
+}
+
 func WithFailoverPolicy(failoverPolicy string) NewDaemonOpt {
 	return func(d *Daemon) error {
 		d.States.FailoverPolicy = failoverPolicy
