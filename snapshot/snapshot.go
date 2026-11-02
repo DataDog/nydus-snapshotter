@@ -36,7 +36,6 @@ import (
 	"github.com/containerd/nydus-snapshotter/pkg/metrics"
 	"github.com/containerd/nydus-snapshotter/pkg/metrics/collector"
 	"github.com/containerd/nydus-snapshotter/pkg/metrics/data"
-	"github.com/containerd/nydus-snapshotter/pkg/nbd"
 	"github.com/containerd/nydus-snapshotter/pkg/pprof"
 	"github.com/containerd/nydus-snapshotter/pkg/referrer"
 	"github.com/containerd/nydus-snapshotter/pkg/system"
@@ -103,7 +102,7 @@ func NewSnapshotter(ctx context.Context, cfg *config.SnapshotterConfig) (snapsho
 	var skipSSLVerify bool
 	var daemonConfig *daemonconfig.DaemonConfig
 	fsDriver := config.GetFsDriver()
-	if fsDriver == config.FsDriverFscache || fsDriver == config.FsDriverFusedev {
+	if fsDriver == config.FsDriverFscache || fsDriver == config.FsDriverFusedev || fsDriver == config.FsDriverNbd {
 		config, err := daemonconfig.NewDaemonConfig(config.GetFsDriver(), cfg.DaemonConfig.NydusdConfigPath)
 		if err != nil {
 			return nil, errors.Wrap(err, "load daemon configuration")
@@ -150,19 +149,19 @@ func NewSnapshotter(ctx context.Context, cfg *config.SnapshotterConfig) (snapsho
 		fsManagers = append(fsManagers, fscacheManager)
 	}
 
-	if config.GetFsDriver() == config.FsDriverFusedev {
+	if d := config.GetFsDriver(); d == config.FsDriverFusedev || d == config.FsDriverNbd {
 		fusedevManager, err := mgr.NewManager(mgr.Opt{
 			NydusdBinaryPath: cfg.DaemonConfig.NydusdPath,
 			Database:         db,
 			CacheDir:         cfg.CacheManagerConfig.CacheDir,
 			RootDir:          cfg.Root,
 			RecoverPolicy:    rp,
-			FsDriver:         config.FsDriverFusedev,
+			FsDriver:         d,
 			DaemonConfig:     daemonConfig,
 			CgroupMgr:        cgroupMgr,
 		})
 		if err != nil {
-			return nil, errors.Wrap(err, "create fusedev manager")
+			return nil, errors.Wrapf(err, "create %s manager", d)
 		}
 		fsManagers = append(fsManagers, fusedevManager)
 	}
@@ -245,14 +244,6 @@ func NewSnapshotter(ctx context.Context, cfg *config.SnapshotterConfig) (snapsho
 		opts = append(opts, filesystem.WithTarfsManager(tarfsMgr))
 	}
 
-	if nbdCfg := cfg.Experimental.NBDConfig; nbdCfg.Enable {
-		nydusdPath := nbdCfg.NydusdPath
-		if nydusdPath == "" {
-			nydusdPath = cfg.DaemonConfig.NydusdPath
-		}
-		opts = append(opts, filesystem.WithNBDManager(nbd.NewManager(nydusdPath, nbdCfg.MaxSectorsKB)))
-	}
-
 	nydusFs, err := filesystem.NewFileSystem(ctx, opts...)
 	if err != nil {
 		return nil, errors.Wrap(err, "initialize filesystem thin layer")
@@ -262,7 +253,7 @@ func NewSnapshotter(ctx context.Context, cfg *config.SnapshotterConfig) (snapsho
 	// and populates the daemon caches from the DB. Starting earlier would cause
 	// the initial reconciliation to see empty managers on restart.
 	if interval := cfg.RemoteConfig.AuthConfig.CredentialRenewalInterval; interval > 0 {
-		startCredentialRenewal(ctx, interval, fsManagers, nydusFs.UpdateNBDAuth)
+		startCredentialRenewal(ctx, interval, fsManagers)
 	}
 
 	if config.IsSystemControllerEnabled() {
@@ -1221,21 +1212,17 @@ func (o *snapshotter) mountRemote(ctx context.Context, labels map[string]string,
 		}
 	}
 
-	// Describe the image of a container rootfs as an NBD block device, for
-	// VM runtimes to attach to the guest. A block device cannot represent
-	// other layers stacked on the image: those keep the regular mount.
-	if s.Kind == snapshots.KindActive && o.fs.NBDEnabled() && len(lowerPaths) == 1 {
-		mounts, err := o.mountWithKataVolume(ctx, id, overlayOptions, key, true)
-		if err == nil {
-			return mounts, nil
+	// Describe the NBD device serving the image of a container rootfs, for VM runtimes
+	// to attach it to the guest. A block device cannot represent other layers stacked on
+	// the image: those keep the regular mount over the host EROFS mounts.
+	if s.Kind == snapshots.KindActive && len(lowerPaths) == 1 {
+		if device := o.fs.NBDDevice(id); device != "" {
+			return o.mountWithKataVolume(ctx, id, overlayOptions, key, device)
 		}
-		// Containers that do not run in a VM must not fail because of it;
-		// VM runtimes fall back to sharing the rootfs.
-		log.G(ctx).WithError(err).Errorf("NBD export of snapshot %s failed, using the regular mount", id)
 	}
 
 	if o.enableKataVolume {
-		return o.mountWithKataVolume(ctx, id, overlayOptions, key, false)
+		return o.mountWithKataVolume(ctx, id, overlayOptions, key, "")
 	}
 	// Add `extraoption` if NydusOverlayFS is enable or daemonMode is `None`
 	if o.enableNydusOverlayFS || config.GetDaemonMode() == config.DaemonModeNone {
@@ -1419,7 +1406,7 @@ func collectUsedCacheBlobIDs(instances []*rafs.Rafs) (map[string]bool, bool) {
 	complete := true
 	for _, instance := range instances {
 		fsDriver := instance.GetFsDriver()
-		if fsDriver != config.FsDriverFscache && fsDriver != config.FsDriverFusedev {
+		if fsDriver != config.FsDriverFscache && fsDriver != config.FsDriverFusedev && fsDriver != config.FsDriverNbd {
 			// Only blobcache-backed drivers materialize files in the cache
 			// directory; other drivers never populate UnderlyingFiles.
 			continue
@@ -1450,7 +1437,7 @@ func (o *snapshotter) reconcileUnknownCacheUsage() {
 		for _, d := range fsManager.ListDaemons() {
 			for snapshotID, instance := range d.RafsCache.List() {
 				fsDriver := instance.GetFsDriver()
-				if fsDriver != config.FsDriverFscache && fsDriver != config.FsDriverFusedev {
+				if fsDriver != config.FsDriverFscache && fsDriver != config.FsDriverFusedev && fsDriver != config.FsDriverNbd {
 					continue
 				}
 				if len(instance.UnderlyingFiles) != 0 {

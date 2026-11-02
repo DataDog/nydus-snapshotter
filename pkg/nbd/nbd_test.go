@@ -9,216 +9,104 @@ package nbd
 import (
 	"os"
 	"path/filepath"
-	"strconv"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-const defaultEventually = 5 * time.Second
-
-// fakeNydusd mimics `nydusd nbd ... <device>`: it registers itself as the
-// server of the device in the fake sysfs, then serves until killed.
-const fakeNydusd = `#!/bin/sh
-for dev; do :; done
-echo $$ > "$FAKE_SYS_BLOCK/$(basename "$dev")/pid"
-trap 'rm -f "$FAKE_SYS_BLOCK/$(basename "$dev")/pid"; exit 0' TERM
-while :; do sleep 0.05; done
-`
-
-// setup fakes sysfs with the given NBD devices and returns a Manager running
-// the fake nydusd plus a snapshot directory.
-func setup(t *testing.T, devices ...string) (*Manager, string) {
+// fakeSys points sysfs and /dev at a temporary directory holding the given NBD devices; the
+// configured ones expose a pid like the kernel does.
+func fakeSys(t *testing.T, devices []string, configured []string) {
 	t.Helper()
 	root := t.TempDir()
-	sys := filepath.Join(root, "sys")
+	oldSys, oldDev := sysBlockDir, devDir
+	sysBlockDir, devDir = filepath.Join(root, "sys"), filepath.Join(root, "dev")
+	t.Cleanup(func() { sysBlockDir, devDir = oldSys, oldDev })
+	require.NoError(t, os.MkdirAll(devDir, 0o755))
 	for _, d := range devices {
-		require.NoError(t, os.MkdirAll(filepath.Join(sys, d, "queue"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(sysBlockDir, d, "queue"), 0o755))
 	}
-	bin := filepath.Join(root, "nydusd")
-	require.NoError(t, os.WriteFile(bin, []byte(fakeNydusd), 0o755))
-	t.Setenv("FAKE_SYS_BLOCK", sys)
-
-	oldSys := sysBlockDir
-	sysBlockDir = sys
-	t.Cleanup(func() { sysBlockDir = oldSys })
-
-	snapshotDir := filepath.Join(root, "snapshots", "1")
-	require.NoError(t, os.MkdirAll(snapshotDir, 0o755))
-	return NewManager(bin, 0), snapshotDir
+	for _, d := range configured {
+		require.NoError(t, os.WriteFile(filepath.Join(sysBlockDir, d, "pid"), []byte("1"), 0o644))
+	}
 }
 
-func processAlive(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
-}
-
-func TestExport(t *testing.T) {
+func TestAllocate(t *testing.T) {
 	tests := []struct {
-		Name    string
-		Devices []string
-		// Busy devices are already served by another process.
-		Busy    []string
-		Want    string
-		WantErr bool
+		Name       string
+		Devices    []string
+		Configured []string
+		InUse      []int
+		Want       int
+		WantErr    bool
 	}{
-		{Name: "FirstDevice", Devices: []string{"nbd0", "nbd1"}, Want: "/dev/nbd0"},
-		{Name: "SkipsBusyDevice", Devices: []string{"nbd0", "nbd1"}, Busy: []string{"nbd0"}, Want: "/dev/nbd1"},
-		{Name: "NumericOrder", Devices: []string{"nbd10", "nbd2"}, Want: "/dev/nbd2"},
-		{Name: "AllBusy", Devices: []string{"nbd0"}, Busy: []string{"nbd0"}, WantErr: true},
-		{Name: "NoNBDModule", Devices: []string{"sda"}, WantErr: true},
+		{Name: "FirstDevice", Devices: []string{"nbd0", "nbd1"}, Want: 0},
+		{Name: "SkipsConfigured", Devices: []string{"nbd0", "nbd1"}, Configured: []string{"nbd0"}, Want: 1},
+		{Name: "SkipsInUse", Devices: []string{"nbd0", "nbd1"}, InUse: []int{0}, Want: 1},
+		// Regression: a missing device cannot be connected.
+		{Name: "SkipsMissingDevice", Devices: []string{"nbd1"}, Want: 1},
+		{Name: "AllBusy", Devices: []string{"nbd0", "nbd1"}, Configured: []string{"nbd0"}, InUse: []int{1}, WantErr: true},
+		{Name: "NoModuleLoaded", WantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.Name, func(t *testing.T) {
-			m, snapshotDir := setup(t, tt.Devices...)
-			for _, d := range tt.Busy {
-				require.NoError(t, os.WriteFile(filepath.Join(sysBlockDir, d, "pid"), []byte("1"), 0o644))
+			fakeSys(t, tt.Devices, tt.Configured)
+			inUse := map[string]bool{}
+			for _, i := range tt.InUse {
+				inUse[Device(i)] = true
 			}
 
-			device, err := m.Export(snapshotDir, "/boot", "/config.json")
+			device, err := Allocate(inUse)
 			if tt.WantErr {
 				assert.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
-			t.Cleanup(func() { _ = m.Remove(snapshotDir) })
-			assert.Equal(t, tt.Want, device)
-
-			st, err := readState(stateDir(snapshotDir))
-			require.NoError(t, err)
-			assert.Equal(t, tt.Want, st.Device)
-			assert.True(t, processAlive(st.Pid))
+			assert.Equal(t, Device(tt.Want), device)
 		})
 	}
 }
 
-func TestExportLifecycle(t *testing.T) {
+func TestTune(t *testing.T) {
 	tests := []struct {
-		Name   string
-		Assert func(t *testing.T, m *Manager, snapshotDir string, first state)
+		Name    string
+		Device  string
+		WantErr bool
 	}{
-		{
-			Name: "Idempotent",
-			Assert: func(t *testing.T, m *Manager, snapshotDir string, first state) {
-				device, err := m.Export(snapshotDir, "/boot", "/config.json")
-				require.NoError(t, err)
-				assert.Equal(t, first.Device, device)
-				st, err := readState(stateDir(snapshotDir))
-				require.NoError(t, err)
-				assert.Equal(t, first.Pid, st.Pid)
-			},
-		},
-		{
-			Name: "RestartsStaleExport",
-			Assert: func(t *testing.T, m *Manager, snapshotDir string, first state) {
-				// The daemon died (e.g. node reboot): the device has no server.
-				require.NoError(t, syscall.Kill(first.Pid, syscall.SIGKILL))
-				require.NoError(t, os.Remove(filepath.Join(sysBlockDir, filepath.Base(first.Device), "pid")))
-
-				device, err := m.Export(snapshotDir, "/boot", "/config.json")
-				require.NoError(t, err)
-				assert.Equal(t, first.Device, device)
-				st, err := readState(stateDir(snapshotDir))
-				require.NoError(t, err)
-				assert.NotEqual(t, first.Pid, st.Pid)
-			},
-		},
-		{
-			Name: "Remove",
-			Assert: func(t *testing.T, m *Manager, snapshotDir string, first state) {
-				require.NoError(t, m.Remove(snapshotDir))
-				assert.Eventually(t, func() bool { return !processAlive(first.Pid) }, defaultEventually, pollInterval)
-				_, err := os.Stat(stateDir(snapshotDir))
-				assert.True(t, os.IsNotExist(err))
-				// Removing again is a no-op.
-				assert.NoError(t, m.Remove(snapshotDir))
-			},
-		},
-		{
-			Name: "UpdateAuthWithoutAPI",
-			Assert: func(t *testing.T, m *Manager, snapshotDir string, first state) {
-				// The fake daemon has no API socket: the error is reported.
-				assert.Error(t, m.UpdateAuth(snapshotDir, "auth"))
-				// Without export there is nothing to update.
-				require.NoError(t, m.Remove(snapshotDir))
-				assert.NoError(t, m.UpdateAuth(snapshotDir, "auth"))
-			},
-		},
+		{Name: "Existing", Device: "nbd0"},
+		{Name: "MissingDevice", Device: "nbd1", WantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.Name, func(t *testing.T) {
-			m, snapshotDir := setup(t, "nbd0")
-			_, err := m.Export(snapshotDir, "/boot", "/config.json")
-			require.NoError(t, err)
-			t.Cleanup(func() { _ = m.Remove(snapshotDir) })
-			first, err := readState(stateDir(snapshotDir))
-			require.NoError(t, err)
+			fakeSys(t, []string{"nbd0"}, nil)
 
-			tt.Assert(t, m, snapshotDir, first)
-		})
-	}
-}
-
-func TestStateAlive(t *testing.T) {
-	_, _ = setup(t, "nbd0")
-	self := os.Getpid()
-	tests := []struct {
-		Name      string
-		DevicePid string
-		State     state
-		Want      bool
-	}{
-		{Name: "ServedByProcess", DevicePid: strconv.Itoa(self), State: state{Device: "/dev/nbd0", Pid: self}, Want: true},
-		{Name: "NotConnected", State: state{Device: "/dev/nbd0", Pid: self}},
-		{Name: "ServedByAnotherProcess", DevicePid: "1", State: state{Device: "/dev/nbd0", Pid: self}},
-		{Name: "NoPid", DevicePid: strconv.Itoa(self), State: state{Device: "/dev/nbd0"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.Name, func(t *testing.T) {
-			pidFile := filepath.Join(sysBlockDir, "nbd0", "pid")
-			_ = os.Remove(pidFile)
-			if tt.DevicePid != "" {
-				require.NoError(t, os.WriteFile(pidFile, []byte(tt.DevicePid+"\n"), 0o644))
-			}
-			assert.Equal(t, tt.Want, tt.State.alive())
-		})
-	}
-}
-
-func TestExportMaxSectorsKB(t *testing.T) {
-	tests := []struct {
-		Name         string
-		MaxSectorsKB int
-		// NoQueueDir makes writing queue/max_sectors_kb fail.
-		NoQueueDir bool
-		Want       string
-	}{
-		{Name: "Default", MaxSectorsKB: 0, Want: strconv.Itoa(DefaultMaxSectorsKB)},
-		{Name: "Configured", MaxSectorsKB: 1024, Want: "1024"},
-		{Name: "WriteFailureKeepsExport", MaxSectorsKB: 1024, NoQueueDir: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.Name, func(t *testing.T) {
-			m, snapshotDir := setup(t, "nbd0")
-			m = NewManager(m.nydusdPath, tt.MaxSectorsKB)
-			if tt.NoQueueDir {
-				require.NoError(t, os.RemoveAll(filepath.Join(sysBlockDir, "nbd0", "queue")))
-			}
-
-			device, err := m.Export(snapshotDir, "/boot", "/config.json")
-			require.NoError(t, err)
-			t.Cleanup(func() { _ = m.Remove(snapshotDir) })
-			assert.Equal(t, "/dev/nbd0", device)
-
-			b, err := os.ReadFile(filepath.Join(sysBlockDir, "nbd0", "queue", "max_sectors_kb"))
-			if tt.NoQueueDir {
+			err := Tune("/dev/" + tt.Device)
+			if tt.WantErr {
 				assert.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.Want, string(b))
+			for _, attr := range []string{"max_sectors_kb", "read_ahead_kb"} {
+				b, err := os.ReadFile(filepath.Join(sysBlockDir, tt.Device, "queue", attr))
+				require.NoError(t, err)
+				assert.Equal(t, "4096", string(b), attr)
+			}
+		})
+	}
+}
+
+func TestUmountNotMounted(t *testing.T) {
+	tests := []struct {
+		Name string
+		Path func(t *testing.T) string
+	}{
+		{Name: "Missing", Path: func(t *testing.T) string { return filepath.Join(t.TempDir(), "absent") }},
+		{Name: "PlainDirectory", Path: func(t *testing.T) string { return t.TempDir() }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.Name, func(t *testing.T) {
+			assert.NoError(t, Umount(tt.Path(t)))
 		})
 	}
 }

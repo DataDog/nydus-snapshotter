@@ -4,312 +4,105 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Package nbd exports RAFS instances as read-only NBD block devices served by
-// `nydusd nbd`, so that VM runtimes (Kata) can hot-plug the image as a block
-// device and mount it as EROFS in the guest instead of sharing the FUSE mount
-// through virtio-fs. Data is still fetched lazily from the backend.
-//
-// One export per RAFS instance (image), shared by all containers of that
-// image, lives as long as the RAFS instance. Its state is kept next to the
-// snapshot so exports survive snapshotter restarts, like nydusd FUSE daemons.
+// Package nbd holds helpers of the nbd filesystem driver: a dedicated `nydusd nbd`
+// serves the image of a RAFS instance as a read-only NBD device, mounted as EROFS on the
+// host and attached as is to VM guests.
 package nbd
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
-	"strings"
-	"sync"
-	"syscall"
-	"time"
 
-	"github.com/containerd/log"
 	"github.com/pkg/errors"
+	"golang.org/x/sys/unix"
 
-	"github.com/containerd/nydus-snapshotter/pkg/daemon"
+	"github.com/containerd/nydus-snapshotter/pkg/utils/mount"
 )
 
 const (
-	stateDirName  = "nbd"
-	stateFileName = "state.json"
-	apiSockName   = "api.sock"
-	logFileName   = "nydusd.log"
-
-	readyTimeout = 10 * time.Second
-	stopTimeout  = 5 * time.Second
-	pollInterval = 20 * time.Millisecond
-
-	// DefaultMaxSectorsKB replaces the kernel default of 128 KiB: a request
-	// served by nydusd costs a backend round trip per missing range, and larger
-	// requests make fewer, larger fetches (cold reads of an image went from
-	// ~120 to ~430 MiB/s with 8 parallel readers).
-	DefaultMaxSectorsKB = 4096
+	// MaxDevices bounds the device indices Allocate considers. Only devices created by the nbd
+	// module (its nbds_max parameter) are used: nydusd keeps them on disconnect.
+	MaxDevices = 4096
 )
 
 var (
 	// Overridden by tests.
 	sysBlockDir = "/sys/block"
 	devDir      = "/dev"
-	procDir     = "/proc"
 )
 
-// Manager starts and stops `nydusd nbd` exports.
-type Manager struct {
-	nydusdPath   string
-	maxSectorsKB int
-	// mu serializes device allocation and per-snapshot state changes; exports
-	// are created once per image so contention is negligible.
-	mu sync.Mutex
+// Device returns the path of NBD device index.
+func Device(index int) string {
+	return filepath.Join(devDir, fmt.Sprintf("nbd%d", index))
 }
 
-// state is persisted in <snapshot dir>/nbd/state.json.
-type state struct {
-	Device string `json:"device"`
-	Pid    int    `json:"pid"`
-}
-
-// NewManager returns a Manager starting exports with nydusdPath. maxSectorsKB
-// bounds the size of the requests sent to exports, 0 meaning DefaultMaxSectorsKB.
-func NewManager(nydusdPath string, maxSectorsKB int) *Manager {
-	if maxSectorsKB <= 0 {
-		maxSectorsKB = DefaultMaxSectorsKB
-	}
-	return &Manager{nydusdPath: nydusdPath, maxSectorsKB: maxSectorsKB}
-}
-
-func stateDir(snapshotDir string) string {
-	return filepath.Join(snapshotDir, stateDirName)
-}
-
-// Export returns the NBD device serving the RAFS instance whose bootstrap and
-// nydusd configuration are given, starting `nydusd nbd` if needed. It is
-// idempotent.
-func (m *Manager) Export(snapshotDir, bootstrap, configFile string) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	dir := stateDir(snapshotDir)
-	if st, err := readState(dir); err == nil && st.alive() {
-		return st.Device, nil
-	}
-	// No export, or a stale one (e.g. after a node reboot): start afresh.
-	_ = os.RemoveAll(dir)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", errors.Wrap(err, "create nbd state dir")
-	}
-
-	device, err := freeDevice()
-	if err != nil {
-		return "", err
-	}
-
-	logFile, err := os.OpenFile(filepath.Join(dir, logFileName), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return "", errors.Wrap(err, "open nydusd nbd log")
-	}
-	defer logFile.Close()
-
-	cmd := exec.Command(m.nydusdPath, "nbd",
-		"--bootstrap", bootstrap,
-		"--config", configFile,
-		"--apisock", filepath.Join(dir, apiSockName),
-		"--log-level", "info",
-		device)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	// Like FUSE daemons, exports must outlive snapshotter restarts.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		return "", errors.Wrap(err, "start nydusd nbd")
-	}
-	exited := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(exited)
-	}()
-
-	st := state{Device: device, Pid: cmd.Process.Pid}
-	if err := st.waitReady(exited); err != nil {
-		stopProcess(st.Pid, exited)
-		return "", errors.Wrapf(err, "nydusd nbd on %s not ready, see %s", device, filepath.Join(dir, logFileName))
-	}
-	if err := writeState(dir, st); err != nil {
-		stopProcess(st.Pid, exited)
-		return "", err
-	}
-	// Only a tuning: the export works with the kernel default.
-	if err := setMaxSectorsKB(device, m.maxSectorsKB); err != nil {
-		log.L.WithError(err).Warnf("set max_sectors_kb of %s", device)
-	}
-	log.L.Infof("exported RAFS %s on %s (pid %d)", bootstrap, device, st.Pid)
-	return device, nil
-}
-
-// Remove stops the export of a RAFS instance, if any. It must only be called
-// once no container uses the image anymore.
-func (m *Manager) Remove(snapshotDir string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	dir := stateDir(snapshotDir)
-	st, err := readState(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err == nil && st.alive() {
-		stopProcess(st.Pid, nil)
-	}
-	return os.RemoveAll(dir)
-}
-
-// UpdateAuth hot-reloads registry credentials of a running export.
-func (m *Manager) UpdateAuth(snapshotDir, auth string) error {
-	m.mu.Lock()
-	dir := stateDir(snapshotDir)
-	st, err := readState(dir)
-	m.mu.Unlock()
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !st.alive() {
-		return nil
-	}
-	client, err := daemon.NewNydusClient(filepath.Join(dir, apiSockName))
-	if err != nil {
-		return err
-	}
-	// The registry backend of a block device is registered under id "/".
-	return client.UpdateConfig("/", map[string]string{"registry_auth": auth})
-}
-
-func readState(dir string) (state, error) {
-	var st state
-	b, err := os.ReadFile(filepath.Join(dir, stateFileName))
-	if err != nil {
-		return st, err
-	}
-	if err := json.Unmarshal(b, &st); err != nil {
-		return st, errors.Wrap(err, "decode nbd state")
-	}
-	return st, nil
-}
-
-func writeState(dir string, st state) error {
-	b, err := json.Marshal(st)
-	if err != nil {
-		return err
-	}
-	tmp := filepath.Join(dir, stateFileName+".tmp")
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return errors.Wrap(err, "write nbd state")
-	}
-	return errors.Wrap(os.Rename(tmp, filepath.Join(dir, stateFileName)), "install nbd state")
-}
-
-// alive reports whether the recorded daemon still serves the recorded device.
-func (st state) alive() bool {
-	if st.Pid <= 0 {
-		return false
-	}
-	tid := devicePid(st.Device)
-	if tid == 0 {
-		return false
-	}
-	// The kernel records the thread running NBD_DO_IT, not the process.
-	_, err := os.Stat(filepath.Join(procDir, strconv.Itoa(st.Pid), "task", strconv.Itoa(tid)))
+// configured reports whether NBD device index is configured: the kernel exposes the pid of
+// the process which configured it until it is disconnected, even if that process died.
+func configured(index int) bool {
+	_, err := os.Stat(filepath.Join(sysBlockDir, fmt.Sprintf("nbd%d", index), "pid"))
 	return err == nil
 }
 
-func (st state) waitReady(exited <-chan struct{}) error {
-	deadline := time.After(readyTimeout)
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-	for {
-		if st.alive() {
-			return nil
-		}
-		select {
-		case <-exited:
-			return errors.New("nydusd exited")
-		case <-deadline:
-			return errors.New("timeout")
-		case <-ticker.C:
-		}
-	}
+// exists reports whether the kernel has NBD device index.
+func exists(index int) bool {
+	_, err := os.Stat(filepath.Join(sysBlockDir, fmt.Sprintf("nbd%d", index)))
+	return err == nil
 }
 
-// setMaxSectorsKB sets the largest request the kernel sends to device. The
-// kernel rejects values above queue/max_hw_sectors_kb.
-func setMaxSectorsKB(device string, kb int) error {
-	p := filepath.Join(sysBlockDir, filepath.Base(device), "queue", "max_sectors_kb")
-	return errors.Wrap(os.WriteFile(p, []byte(strconv.Itoa(kb)), 0o644), "write "+p)
+// Allocate returns the lowest existing NBD device neither in inUse nor configured in the
+// kernel. The caller serializes allocations and records the device before releasing its lock.
+func Allocate(inUse map[string]bool) (string, error) {
+	for i := 0; i < MaxDevices; i++ {
+		d := Device(i)
+		if !exists(i) || inUse[d] || configured(i) {
+			continue
+		}
+		return d, nil
+	}
+	return "", errors.New("no free NBD device, is the nbd module loaded with enough nbds_max?")
 }
 
-// devicePid returns the id of the server thread attached to an NBD device, or
-// 0. The kernel exposes it while NBD_DO_IT runs.
-func devicePid(device string) int {
-	b, err := os.ReadFile(filepath.Join(sysBlockDir, filepath.Base(device), "pid"))
-	if err != nil {
-		return 0
+// Requests and readahead of NBD devices, in KiB. Both replace the kernel default of 128 KiB:
+// each request nydusd serves costs a backend round trip per missing range on a cold image, so
+// larger requests make fewer, larger fetches.
+const (
+	maxSectorsKB = 4096
+	readAheadKB  = 4096
+)
+
+// Tune sets the request size and readahead of device.
+func Tune(device string) error {
+	for attr, kb := range map[string]int{"max_sectors_kb": maxSectorsKB, "read_ahead_kb": readAheadKB} {
+		p := filepath.Join(sysBlockDir, filepath.Base(device), "queue", attr)
+		if err := os.WriteFile(p, []byte(strconv.Itoa(kb)), 0o644); err != nil {
+			return errors.Wrap(err, "write "+p)
+		}
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil {
-		return 0
-	}
-	return pid
+	return nil
 }
 
-// freeDevice returns the first NBD device without a server. Callers hold
-// Manager.mu, and only the snapshotter attaches NBD devices.
-func freeDevice() (string, error) {
-	entries, err := os.ReadDir(sysBlockDir)
-	if err != nil {
-		return "", errors.Wrap(err, "list block devices")
+// Mount mounts the EROFS image of device read-only at mountpoint, unless already mounted.
+func Mount(device, mountpoint string) error {
+	if mounted, err := mount.IsMountpoint(mountpoint); err != nil {
+		return err
+	} else if mounted {
+		return nil
 	}
-	var indexes []int
-	for _, e := range entries {
-		if rest, ok := strings.CutPrefix(e.Name(), "nbd"); ok {
-			if idx, err := strconv.Atoi(rest); err == nil {
-				indexes = append(indexes, idx)
-			}
-		}
+	if err := unix.Mount(device, mountpoint, "erofs", unix.MS_RDONLY, ""); err != nil {
+		return errors.Wrapf(err, "mount %s as erofs on %s", device, mountpoint)
 	}
-	if len(indexes) == 0 {
-		return "", errors.New("no NBD device, is the nbd kernel module loaded?")
-	}
-	sort.Ints(indexes)
-	for _, idx := range indexes {
-		device := filepath.Join(devDir, fmt.Sprintf("nbd%d", idx))
-		if devicePid(device) == 0 {
-			return device, nil
-		}
-	}
-	return "", errors.Errorf("all %d NBD devices are in use", len(indexes))
+	return nil
 }
 
-// stopProcess asks nydusd to exit (it disconnects the device), then kills it.
-// exited, when known, is closed once the process has been reaped.
-func stopProcess(pid int, exited <-chan struct{}) {
-	_ = syscall.Kill(pid, syscall.SIGTERM)
-	deadline := time.Now().Add(stopTimeout)
-	for time.Now().Before(deadline) {
-		if exited != nil {
-			select {
-			case <-exited:
-				return
-			default:
-			}
-		} else if syscall.Kill(pid, 0) != nil {
-			return
-		}
-		time.Sleep(pollInterval)
+// Umount unmounts the EROFS image at mountpoint, if mounted.
+func Umount(mountpoint string) error {
+	if _, err := os.Stat(mountpoint); os.IsNotExist(err) {
+		return nil
 	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	if mounted, err := mount.IsMountpoint(mountpoint); err != nil || !mounted {
+		return err
+	}
+	return errors.Wrapf(unix.Unmount(mountpoint, 0), "umount %s", mountpoint)
 }

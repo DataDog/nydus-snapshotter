@@ -55,11 +55,12 @@ type Filesystem struct {
 	indexMgr            *index.Manager
 	stargzResolver      *stargz.Resolver
 	tarfsMgr            *tarfs.Manager
-	nbdMgr              *nbd.Manager
-	verifier            *signature.Verifier
-	nydusdBinaryPath    string
-	rootMountpoint      string
-	snapshotMutexMap    sync.Map
+	// nbdAllocMu serializes NBD device allocations of the nbd driver.
+	nbdAllocMu       sync.Mutex
+	verifier         *signature.Verifier
+	nydusdBinaryPath string
+	rootMountpoint   string
+	snapshotMutexMap sync.Map
 }
 
 // NewFileSystem initialize Filesystem instance
@@ -152,6 +153,10 @@ func NewFileSystem(ctx context.Context, opt ...NewFSOpt) (*Filesystem, error) {
 			}
 			if err := d.RecoverRafsInstances(); err != nil {
 				log.L.Warnf("Failed to recover mounts for daemon %s, skipping: %v", d.ID(), err)
+				return nil
+			}
+			if err := fs.attachNBD(d); err != nil {
+				log.L.Warnf("Failed to mount the NBD device of daemon %s, skipping: %v", d.ID(), err)
 				return nil
 			}
 			fs.TryRetainSharedDaemon(d)
@@ -279,7 +284,7 @@ func (fs *Filesystem) WaitUntilReady(snapshotID string, labels map[string]string
 		return errors.Wrapf(errdefs.ErrNotFound, "no instance %s", rafsKey)
 	}
 
-	if rafs.GetFsDriver() == config.FsDriverFscache || rafs.GetFsDriver() == config.FsDriverFusedev {
+	if isDaemonDriver(rafs.GetFsDriver()) {
 		d, err := fs.getDaemonByRafs(rafs)
 		if err != nil {
 			return errors.Wrapf(err, "snapshot id %s daemon id %s", snapshotID, rafs.DaemonID)
@@ -444,7 +449,7 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 	}
 
 	var d *daemon.Daemon
-	if fsDriver == config.FsDriverFscache || fsDriver == config.FsDriverFusedev {
+	if isDaemonDriver(fsDriver) {
 		bootstrap, err := rafs.BootstrapFile()
 		if err != nil {
 			return errors.Wrapf(err, "find bootstrap file snapshot %s", snapshotID)
@@ -477,7 +482,11 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 					return errors.Wrapf(err, "create idmap mountpoint dir %s", mp)
 				}
 			}
-			d, err = fs.createDaemon(fsManager, config.DaemonModeDedicated, mp, 0)
+			if fsDriver == config.FsDriverNbd {
+				d, err = fs.createNBDDaemon(fsManager, mp)
+			} else {
+				d, err = fs.createDaemon(fsManager, config.DaemonModeDedicated, mp, 0)
+			}
 			// if daemon already exists for snapshotID, just return
 			if err != nil && !errdefs.IsAlreadyExists(err) {
 				return err
@@ -539,7 +548,7 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 		if err != nil {
 			err = errors.Wrapf(err, "mount file system by daemon %s, snapshot %s", d.ID(), snapshotID)
 		}
-	case config.FsDriverFusedev:
+	case config.FsDriverFusedev, config.FsDriverNbd:
 		err = fs.mountRemote(fsManager, useSharedDaemon, d, rafs)
 		if err != nil {
 			err = errors.Wrapf(err, "mount file system by daemon %s, snapshot %s", d.ID(), snapshotID)
@@ -564,9 +573,12 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 	}
 
 	// Wait for the daemon to be ready before persisting the RAFS instance
-	if err == nil && (fsDriver == config.FsDriverFscache || fsDriver == config.FsDriverFusedev) {
-		if err := d.WaitUntilState(types.DaemonStateRunning); err != nil {
+	if err == nil && isDaemonDriver(fsDriver) {
+		if err = d.WaitUntilState(types.DaemonStateRunning); err != nil {
 			return errors.Wrapf(err, "daemon %s failed to reach RUNNING for snapshot %s", d.ID(), snapshotID)
+		}
+		if err = fs.attachNBD(d); err != nil {
+			return errors.Wrapf(err, "mount NBD device of snapshot %s", snapshotID)
 		}
 	}
 
@@ -655,24 +667,7 @@ func (fs *Filesystem) Umount(_ context.Context, snapshotID string) error {
 		return nil
 	}
 
-	if err := fs.umountRafsInstances(rafsList); err != nil {
-		return err
-	}
-
-	// The image is no longer used by any container: stop its NBD export.
-	if fs.nbdMgr != nil {
-		if err := fs.nbdMgr.Remove(nbdExportDir(snapshotID)); err != nil {
-			return errors.Wrapf(err, "remove NBD export of snapshot %s", snapshotID)
-		}
-	}
-	return nil
-}
-
-// nbdExportDir is where the NBD export of an image is tracked: the source
-// snapshot, shared by its id-mapped RAFS instances (a VM does not use host
-// id mappings, so they all export the same image).
-func nbdExportDir(sourceSnapshotID string) string {
-	return path.Join(config.GetSnapshotsRootDir(), sourceSnapshotID)
+	return fs.umountRafsInstances(rafsList)
 }
 
 func (fs *Filesystem) UmountByLabels(_ context.Context, snapshotID string, labels map[string]string) error {
@@ -727,10 +722,16 @@ func (fs *Filesystem) umountRafsInstances(rafsList []*racache.Rafs) error {
 
 func (fs *Filesystem) umountRafsInstance(rafs *racache.Rafs) error {
 	switch rafs.GetFsDriver() {
-	case config.FsDriverFscache, config.FsDriverFusedev:
+	case config.FsDriverFscache, config.FsDriverFusedev, config.FsDriverNbd:
 		fsManager, err := fs.getManager(rafs.GetFsDriver())
 		if err != nil {
 			return errors.Wrapf(err, "get manager for filesystem instance %s", rafs.DaemonID)
+		}
+		// Unmount the EROFS image before nydusd disconnects its device.
+		if rafs.GetFsDriver() == config.FsDriverNbd {
+			if err := nbd.Umount(rafs.GetMountpoint()); err != nil {
+				return errors.Wrapf(err, "umount NBD image of snapshot %s", rafs.SnapshotID)
+			}
 		}
 
 		daemon, daemonErr := fs.getDaemonByRafs(rafs)
@@ -894,41 +895,17 @@ func (fs *Filesystem) MountPoint(snapshotID string) (string, error) {
 	return "", errdefs.ErrNotFound
 }
 
-// NBDEnabled reports whether nydus images are exported as NBD block devices.
-func (fs *Filesystem) NBDEnabled() bool {
-	return fs.nbdMgr != nil
-}
-
-// ExportNBD exports the image of a nydus snapshot as a read-only NBD block
-// device and returns the device path. The export is shared by all containers
-// of the image and lives until the image is unmounted.
-func (fs *Filesystem) ExportNBD(snapshotID string) (string, error) {
-	if fs.nbdMgr == nil {
-		return "", errors.New("NBD export is disabled")
-	}
+// NBDDevice returns the NBD device serving the image of a snapshot mounted by the nbd driver,
+// or "" for other snapshots.
+func (fs *Filesystem) NBDDevice(snapshotID string) string {
 	rafs := racache.RafsGlobalCache.Get(snapshotID)
-	if rafs == nil {
-		return "", errors.Wrapf(errdefs.ErrNotFound, "no RAFS instance for snapshot %s", snapshotID)
+	if rafs == nil || rafs.GetFsDriver() != config.FsDriverNbd {
+		return ""
 	}
-	d, err := fs.getDaemonByRafs(rafs)
-	if err != nil {
-		return "", errors.Wrapf(err, "get daemon of snapshot %s", snapshotID)
+	if d, err := fs.getDaemonByRafs(rafs); err == nil {
+		return d.States.NBDDevice
 	}
-	bootstrap, err := rafs.BootstrapFile()
-	if err != nil {
-		return "", err
-	}
-	return fs.nbdMgr.Export(nbdExportDir(rafs.GetSourceSnapshotID()), bootstrap, d.InstanceConfigFile(snapshotID))
-}
-
-// UpdateNBDAuth hot-reloads registry credentials of the NBD export of a
-// snapshot, if any.
-func (fs *Filesystem) UpdateNBDAuth(snapshotID, auth string) error {
-	rafs := racache.RafsGlobalCache.Get(snapshotID)
-	if fs.nbdMgr == nil || rafs == nil {
-		return nil
-	}
-	return fs.nbdMgr.UpdateAuth(nbdExportDir(rafs.GetSourceSnapshotID()), auth)
+	return ""
 }
 
 func (fs *Filesystem) BootstrapFile(id string) (string, error) {
@@ -967,7 +944,7 @@ func (fs *Filesystem) mountRemote(fsManager *manager.Manager, useSharedDaemon bo
 func (fs *Filesystem) decideDaemonMountpoint(fsDriver string, isSharedDaemonMode bool, rafs *racache.Rafs) (string, error) {
 	m := ""
 
-	if fsDriver == config.FsDriverFscache || fsDriver == config.FsDriverFusedev {
+	if isDaemonDriver(fsDriver) {
 		if isSharedDaemonMode {
 			m = fs.rootMountpoint
 		} else {
@@ -1036,7 +1013,7 @@ func (fs *Filesystem) initSharedDaemon(fsManager *manager.Manager) (err error) {
 
 // createDaemon create new nydus daemon by snapshotID and imageID
 func (fs *Filesystem) createDaemon(fsManager *manager.Manager, daemonMode config.DaemonMode,
-	mountpoint string, ref int32) (d *daemon.Daemon, err error) {
+	mountpoint string, ref int32, extraOpts ...daemon.NewDaemonOpt) (d *daemon.Daemon, err error) {
 	opts := []daemon.NewDaemonOpt{
 		daemon.WithRef(ref),
 		daemon.WithSocketDir(config.GetSocketRoot()),
@@ -1058,6 +1035,7 @@ func (fs *Filesystem) createDaemon(fsManager *manager.Manager, daemonMode config
 	if mountpoint != "" {
 		opts = append(opts, daemon.WithMountpoint(mountpoint))
 	}
+	opts = append(opts, extraOpts...)
 
 	d, err = daemon.NewDaemon(opts...)
 	if err != nil {
@@ -1106,7 +1084,7 @@ func (fs *Filesystem) getSharedDaemon(fsDriver string) (*daemon.Daemon, error) {
 
 func (fs *Filesystem) getDaemonByRafs(rafs *racache.Rafs) (*daemon.Daemon, error) {
 	switch rafs.GetFsDriver() {
-	case config.FsDriverFscache, config.FsDriverFusedev:
+	case config.FsDriverFscache, config.FsDriverFusedev, config.FsDriverNbd:
 		if fsManager, ok := fs.enabledManagers[rafs.GetFsDriver()]; ok {
 			if d := fsManager.GetByDaemonID(rafs.DaemonID); d != nil {
 				return d, nil
@@ -1124,4 +1102,45 @@ func (fs *Filesystem) GetDaemonByID(id string) (*daemon.Daemon, error) {
 		}
 	}
 	return nil, errdefs.ErrNotFound
+}
+
+// isDaemonDriver reports whether filesystem driver fsDriver serves images through nydusd.
+func isDaemonDriver(fsDriver string) bool {
+	return fsDriver == config.FsDriverFscache || fsDriver == config.FsDriverFusedev ||
+		fsDriver == config.FsDriverNbd
+}
+
+// createNBDDaemon creates a dedicated daemon of the nbd driver with a free NBD device.
+func (fs *Filesystem) createNBDDaemon(fsManager *manager.Manager, mountpoint string) (*daemon.Daemon, error) {
+	fs.nbdAllocMu.Lock()
+	defer fs.nbdAllocMu.Unlock()
+
+	inUse := make(map[string]bool)
+	for _, d := range fsManager.ListDaemons() {
+		if d.States.NBDDevice != "" {
+			inUse[d.States.NBDDevice] = true
+		}
+	}
+	device, err := nbd.Allocate(inUse)
+	if err != nil {
+		return nil, err
+	}
+	return fs.createDaemon(fsManager, config.DaemonModeDedicated, mountpoint, 0, daemon.WithNBDDevice(device))
+}
+
+// attachNBD mounts the EROFS image of the NBD device of a running daemon of the nbd driver
+// at its mountpoint. It is idempotent, and a no-op for other drivers.
+func (fs *Filesystem) attachNBD(d *daemon.Daemon) error {
+	if d.States.FsDriver != config.FsDriverNbd {
+		return nil
+	}
+	device := d.States.NBDDevice
+	// Only a tuning: the device works with the kernel defaults.
+	if err := nbd.Tune(device); err != nil {
+		log.L.WithError(err).Warnf("tune %s", device)
+	}
+	if err := os.MkdirAll(d.HostMountpoint(), 0755); err != nil {
+		return errors.Wrapf(err, "create mountpoint %s", d.HostMountpoint())
+	}
+	return nbd.Mount(device, d.HostMountpoint())
 }
