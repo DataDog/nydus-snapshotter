@@ -506,6 +506,10 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 			return errors.Wrap(err, "supplement configuration")
 		}
 
+		if fsDriver == config.FsDriverNbd {
+			nbd.TuneDaemonConfig(cfg)
+		}
+
 		// Inject the UID/GID mapping so nydusd applies VFS-layer remapping.
 		if idMapping != nil && fsDriver == config.FsDriverFusedev {
 			cfg.SetIDMapping(&[3]uint32{idMapping.Internal, idMapping.External, idMapping.Range})

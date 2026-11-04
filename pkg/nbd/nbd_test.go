@@ -13,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/containerd/nydus-snapshotter/config/daemonconfig"
 )
 
 // fakeSys points sysfs and /dev at a temporary directory holding the given NBD devices; the
@@ -107,6 +109,29 @@ func TestUmountNotMounted(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.Name, func(t *testing.T) {
 			assert.NoError(t, Umount(tt.Path(t)))
+		})
+	}
+}
+
+func TestTuneDaemonConfig(t *testing.T) {
+	small, large := 10<<20, 128<<20
+	tests := []struct {
+		Name    string
+		Amplify *int
+		Want    int
+	}{
+		{Name: "Unset", Want: amplifyIO},
+		{Name: "Smaller", Amplify: &small, Want: amplifyIO},
+		{Name: "Larger", Amplify: &large, Want: large},
+	}
+	for _, tt := range tests {
+		t.Run(tt.Name, func(t *testing.T) {
+			cfg := &daemonconfig.FuseDaemonConfig{AmplifyIo: tt.Amplify}
+
+			TuneDaemonConfig(cfg)
+
+			require.NotNil(t, cfg.AmplifyIo)
+			assert.Equal(t, tt.Want, *cfg.AmplifyIo)
 		})
 	}
 }

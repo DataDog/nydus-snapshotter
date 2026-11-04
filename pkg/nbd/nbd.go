@@ -18,6 +18,7 @@ import (
 	"github.com/pkg/errors"
 	"golang.org/x/sys/unix"
 
+	"github.com/containerd/nydus-snapshotter/config/daemonconfig"
 	"github.com/containerd/nydus-snapshotter/pkg/utils/mount"
 )
 
@@ -81,6 +82,23 @@ func Tune(device string) error {
 		}
 	}
 	return nil
+}
+
+// amplifyIO is the least data nydusd fetches per cache miss of an NBD device, in bytes. A
+// fetch costs a backend round trip (~100 ms to the first byte from object storage): the
+// kernel requests of a block device are much smaller than the reads of a FUSE mount, so
+// without a large amplification a cold image is read in many small round trips.
+const amplifyIO = 64 << 20
+
+// TuneDaemonConfig raises the IO amplification of the configuration of a daemon of the nbd
+// driver to amplifyIO.
+func TuneDaemonConfig(cfg daemonconfig.DaemonConfig) {
+	c, ok := cfg.(*daemonconfig.FuseDaemonConfig)
+	if !ok || (c.AmplifyIo != nil && *c.AmplifyIo >= amplifyIO) {
+		return
+	}
+	v := amplifyIO
+	c.AmplifyIo = &v
 }
 
 // Mount mounts the EROFS image of device read-only at mountpoint, unless already mounted.
