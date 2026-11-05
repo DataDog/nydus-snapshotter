@@ -245,6 +245,10 @@ func (m *Manager) DoDaemonUpgrade(d *daemon.Daemon, nydusdPath string, manager *
 // keep no state: d exits keeping its device configured, newDaemon takes the device over when it
 // starts. The kernel queues the requests to the device meanwhile.
 func (m *Manager) UpgradeNBDDaemon(d, newDaemon *daemon.Daemon, cmd *exec.Cmd) error {
+	// The device has no server between the exit of d and the start of newDaemon: fail early.
+	if _, err := exec.LookPath(cmd.Path); err != nil {
+		return errors.Wrap(err, "check new nydusd binary")
+	}
 	if err := m.UnsubscribeDaemonEvent(d); err != nil {
 		return errors.Wrap(err, "unsubscribe daemon event")
 	}
@@ -255,6 +259,10 @@ func (m *Manager) UpgradeNBDDaemon(d, newDaemon *daemon.Daemon, cmd *exec.Cmd) e
 		log.L.Warnf("wait old daemon %s exit failed: %v", d.ID(), err)
 	}
 	if err := cmd.Start(); err != nil {
+		// d exited: start it again so that its device is taken over again.
+		if rerr := m.StartDaemon(d); rerr != nil {
+			log.L.WithError(rerr).Errorf("restart daemon %s after failed upgrade", d.ID())
+		}
 		return errors.Wrap(err, "start process")
 	}
 	newDaemon.States.ProcessID = cmd.Process.Pid
