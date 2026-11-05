@@ -20,7 +20,7 @@ import (
 func TestStartCredentialRenewalLifecycle(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 
-	startCredentialRenewal(ctx, 30*time.Millisecond, []*mgr.Manager{})
+	startCredentialRenewal(ctx, 30*time.Millisecond, []*mgr.Manager{}, nil)
 
 	// Let it tick a few times without error.
 	time.Sleep(100 * time.Millisecond)

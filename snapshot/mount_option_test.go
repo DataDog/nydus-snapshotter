@@ -258,3 +258,20 @@ func TestParseKataVirtualVolume(t *testing.T) {
 		assert.Nil(t, volume)
 	})
 }
+
+func TestWithoutVolatile(t *testing.T) {
+	tests := []struct {
+		Name    string
+		Options []string
+		Want    []string
+	}{
+		{Name: "DropsVolatile", Options: []string{"volatile", "workdir=/w", "upperdir=/u", "lowerdir=/l"}, Want: []string{"workdir=/w", "upperdir=/u", "lowerdir=/l"}},
+		{Name: "KeepsOtherOptions", Options: []string{"workdir=/w", "upperdir=/u", "lowerdir=/l", "io.katacontainers.volume=e30="}, Want: []string{"workdir=/w", "upperdir=/u", "lowerdir=/l", "io.katacontainers.volume=e30="}},
+		{Name: "Empty", Options: nil, Want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.Name, func(t *testing.T) {
+			assert.Equal(t, tt.Want, withoutVolatile(tt.Options))
+		})
+	}
+}

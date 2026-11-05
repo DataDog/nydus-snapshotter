@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -60,6 +61,16 @@ func parseArgs(args []string) (*mountArgs, error) {
 	}
 	if len(margs.options) == 0 {
 		return nil, errors.New("empty overlayfs mount options")
+	}
+
+	// A volatile overlay cannot be mounted again on the same upper/work dirs.
+	// containerd mounts container rootfs read-only and temporarily to inspect
+	// them before the runtime mounts them, and drops volatile from those
+	// mounts itself, but only for the "overlay" type: do it here too.
+	if slices.Contains(margs.options, "ro") {
+		margs.options = slices.DeleteFunc(margs.options, func(o string) bool {
+			return o == "volatile" || o == "fsync=volatile"
+		})
 	}
 
 	return margs, nil

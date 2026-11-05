@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/containerd/containerd/v2/core/mount"
@@ -114,7 +115,7 @@ func (o *snapshotter) remoteMountWithExtraOptions(ctx context.Context, s storage
 	}, nil
 }
 
-func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overlayOptions []string, key string) ([]mount.Mount, error) {
+func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overlayOptions []string, key string, nbd bool) ([]mount.Mount, error) {
 	hasVolume := false
 	rafs := rafs.RafsGlobalCache.Get(id)
 	if rafs == nil {
@@ -145,7 +146,22 @@ func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overla
 		}
 	}
 
+	// Insert Kata volume for the image exported as an NBD block device
+	if nbd {
+		device, err := o.fs.ExportNBD(id)
+		if err != nil {
+			return []mount.Mount{}, errors.Wrapf(err, "export snapshot %s over NBD", id)
+		}
+		opt, err := o.prepareKataVirtualVolume("", device, KataVirtualVolumeImageRawBlockType, "erofs", []string{"ro"}, nil)
+		if err != nil {
+			return []mount.Mount{}, errors.Wrapf(err, "create kata volume for NBD export")
+		}
+		overlayOptions = append(overlayOptions, opt)
+		hasVolume = true
+	}
+
 	if hasVolume {
+		overlayOptions = withoutVolatile(overlayOptions)
 		log.G(ctx).Debugf("fuse.nydus-overlayfs mount options %v", overlayOptions)
 
 		mountType := "fuse.nydus-overlayfs"
@@ -165,6 +181,19 @@ func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overla
 	}
 
 	return overlayMount(overlayOptions), nil
+}
+
+// withoutVolatile drops the volatile overlay option. containerd temporarily
+// mounts a container rootfs, read-write then read-only, before the runtime
+// mounts it (e.g. to copy image volumes, then to resolve users), and drops
+// volatile from those mounts itself, but only for the "overlay" type. A
+// volatile fuse.nydus-overlayfs temporary mount leaves the incompat/volatile
+// marker in the workdir, and the kernel then refuses every following mount of
+// the snapshot with EINVAL, so the container cannot be created.
+func withoutVolatile(options []string) []string {
+	return slices.DeleteFunc(options, func(o string) bool {
+		return o == "volatile"
+	})
 }
 
 func (o *snapshotter) mountWithProxyVolume(rafs rafs.Rafs) ([]string, error) {
