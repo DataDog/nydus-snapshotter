@@ -38,8 +38,7 @@ type DaemonCommand struct {
 	PrefetchFiles   string `type:"param" name:"prefetch-files"`
 	BackendSource   string `type:"param" name:"backend-source"`
 	FailoverPolicy  string `type:"param" name:"failover-policy"`
-	// NBD device served by nydusd nbd
-	NBDDevice string `type:"positional"`
+	NBDDevice       string `type:"positional"`
 }
 
 // Build exec style command line
@@ -201,7 +200,6 @@ func WithUpgrade() Opt {
 	}
 }
 
-// WithNBDDevice sets the NBD device nydusd nbd serves, e.g. /dev/nbd3.
 func WithNBDDevice(device string) Opt {
 	return func(cmd *DaemonCommand) {
 		cmd.NBDDevice = device

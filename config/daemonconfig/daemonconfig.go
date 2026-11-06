@@ -57,7 +57,6 @@ func NewDaemonConfig(fsDriver, path string) (DaemonConfig, error) {
 			return nil, err
 		}
 		return cfg, nil
-	// nydusd nbd takes the same configuration as nydusd fuse.
 	case config.FsDriverFusedev, config.FsDriverNbd:
 		cfg, err := LoadFuseConfig(path)
 		if err != nil {

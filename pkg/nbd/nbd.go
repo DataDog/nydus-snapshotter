@@ -24,12 +24,17 @@ import (
 	"github.com/containerd/nydus-snapshotter/pkg/utils/mount"
 )
 
-// Overridden by tests.
+// Each cache miss costs a backend round trip: larger requests, readahead and amplification
+// make fewer, larger fetches.
+const (
+	maxSectorsKB = 4096
+	readAheadKB  = 4096
+	amplifyIO    = 64 << 20
+)
+
 var sysBlockDir = "/sys/block"
 
-// Allocate returns the lowest NBD device neither in inUse nor configured in the kernel. Only
-// the devices the nbd module created (its nbds_max parameter) are used: nydusd keeps them on
-// disconnect. The caller serializes allocations and records the device before releasing its lock.
+// Allocate returns the lowest NBD device neither in inUse nor configured in the kernel.
 func Allocate(inUse map[string]bool) (string, error) {
 	paths, err := filepath.Glob(filepath.Join(sysBlockDir, "nbd*"))
 	if err != nil {
@@ -42,8 +47,7 @@ func Allocate(inUse map[string]bool) (string, error) {
 	slices.SortFunc(paths, func(a, b string) int { return index(a) - index(b) })
 	for _, p := range paths {
 		device := "/dev/" + filepath.Base(p)
-		// The kernel exposes the pid of the process which configured a device until it is
-		// disconnected, even if that process died.
+		// The kernel keeps the pid of a configured device until it is disconnected.
 		if _, err := os.Stat(filepath.Join(p, "pid")); inUse[device] || err == nil {
 			continue
 		}
@@ -51,14 +55,6 @@ func Allocate(inUse map[string]bool) (string, error) {
 	}
 	return "", errors.New("no free NBD device, is the nbd module loaded with enough nbds_max?")
 }
-
-// Requests and readahead of NBD devices, in KiB. Both replace the kernel default of 128 KiB:
-// each request nydusd serves costs a backend round trip per missing range on a cold image, so
-// larger requests make fewer, larger fetches.
-const (
-	maxSectorsKB = 4096
-	readAheadKB  = 4096
-)
 
 // Tune sets the request size and readahead of device.
 func Tune(device string) error {
@@ -71,14 +67,7 @@ func Tune(device string) error {
 	return nil
 }
 
-// amplifyIO is the least data nydusd fetches per cache miss of an NBD device, in bytes. A
-// fetch costs a backend round trip (~100 ms to the first byte from object storage): the
-// kernel requests of a block device are much smaller than the reads of a FUSE mount, so
-// without a large amplification a cold image is read in many small round trips.
-const amplifyIO = 64 << 20
-
-// TuneDaemonConfig raises the IO amplification of the configuration of a daemon of the nbd
-// driver to amplifyIO.
+// TuneDaemonConfig raises the IO amplification of a daemon configuration to amplifyIO.
 func TuneDaemonConfig(cfg daemonconfig.DaemonConfig) {
 	c, ok := cfg.(*daemonconfig.FuseDaemonConfig)
 	if !ok || (c.AmplifyIo != nil && *c.AmplifyIo >= amplifyIO) {

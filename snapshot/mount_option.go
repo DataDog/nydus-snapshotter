@@ -115,7 +115,7 @@ func (o *snapshotter) remoteMountWithExtraOptions(ctx context.Context, s storage
 	}, nil
 }
 
-func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overlayOptions []string, key string, nbdDevice string) ([]mount.Mount, error) {
+func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overlayOptions []string, key string) ([]mount.Mount, error) {
 	hasVolume := false
 	rafs := rafs.RafsGlobalCache.Get(id)
 	if rafs == nil {
@@ -146,46 +146,43 @@ func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overla
 		}
 	}
 
-	// Insert Kata volume for nbd
-	if nbdDevice != "" {
-		opt, err := o.prepareKataVirtualVolume("", nbdDevice, KataVirtualVolumeImageRawBlockType, "erofs", []string{"ro"}, nil)
-		if err != nil {
-			return []mount.Mount{}, errors.Wrapf(err, "create kata volume for NBD device")
-		}
-		overlayOptions = append(overlayOptions, opt)
-		hasVolume = true
-	}
-
 	if hasVolume {
-		overlayOptions = withoutVolatile(overlayOptions)
-		log.G(ctx).Debugf("fuse.nydus-overlayfs mount options %v", overlayOptions)
-
-		mountType := "fuse.nydus-overlayfs"
-		if o.nydusOverlayFSPath != "" {
-			log.G(ctx).Infof("Using nydus-overlayfs from path: %s", o.nydusOverlayFSPath)
-			mountType = fmt.Sprintf("fuse.%s", o.nydusOverlayFSPath)
-		}
-
-		mounts := []mount.Mount{
-			{
-				Type:    mountType,
-				Source:  KataVirtualVolumeDefaultSource,
-				Options: overlayOptions,
-			},
-		}
-		return mounts, nil
+		return o.kataVolumeMount(ctx, overlayOptions), nil
 	}
 
 	return overlayMount(overlayOptions), nil
 }
 
-// withoutVolatile drops the volatile overlay option. containerd temporarily
-// mounts a container rootfs, read-write then read-only, before the runtime
-// mounts it (e.g. to copy image volumes, then to resolve users), and drops
-// volatile from those mounts itself, but only for the "overlay" type. A
-// volatile fuse.nydus-overlayfs temporary mount leaves the incompat/volatile
-// marker in the workdir, and the kernel then refuses every following mount of
-// the snapshot with EINVAL, so the container cannot be created.
+// mountWithNBDVolume passes the NBD device serving the image to VM runtimes as a Kata volume.
+func (o *snapshotter) mountWithNBDVolume(ctx context.Context, overlayOptions []string, device string) ([]mount.Mount, error) {
+	opt, err := o.prepareKataVirtualVolume("", device, KataVirtualVolumeImageRawBlockType, "erofs", []string{"ro"}, nil)
+	if err != nil {
+		return []mount.Mount{}, errors.Wrapf(err, "create kata volume for NBD device")
+	}
+	return o.kataVolumeMount(ctx, append(overlayOptions, opt)), nil
+}
+
+func (o *snapshotter) kataVolumeMount(ctx context.Context, overlayOptions []string) []mount.Mount {
+	overlayOptions = withoutVolatile(overlayOptions)
+	log.G(ctx).Debugf("fuse.nydus-overlayfs mount options %v", overlayOptions)
+
+	mountType := "fuse.nydus-overlayfs"
+	if o.nydusOverlayFSPath != "" {
+		log.G(ctx).Infof("Using nydus-overlayfs from path: %s", o.nydusOverlayFSPath)
+		mountType = fmt.Sprintf("fuse.%s", o.nydusOverlayFSPath)
+	}
+
+	return []mount.Mount{
+		{
+			Type:    mountType,
+			Source:  KataVirtualVolumeDefaultSource,
+			Options: overlayOptions,
+		},
+	}
+}
+
+// withoutVolatile drops the volatile option: containerd only drops it from its temporary mounts
+// of the "overlay" type, and a volatile mount makes the next ones of the snapshot fail.
 func withoutVolatile(options []string) []string {
 	return slices.DeleteFunc(options, func(o string) bool {
 		return o == "volatile"

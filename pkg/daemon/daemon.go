@@ -61,8 +61,7 @@ type ConfigState struct {
 	FailoverPolicy  string
 	// Where the configuration file resides, all rafs instances share the same configuration template
 	ConfigDir string
-	// NBD device served by a daemon of the nbd driver, e.g. /dev/nbd3. The device outlives the
-	// daemon, a daemon taking over after a crash or an upgrade serves the same device.
+	// NBD device served by the daemon, kept across restarts and upgrades
 	NBDDevice string `json:",omitempty"`
 }
 
@@ -465,8 +464,7 @@ func (d *Daemon) UmountRafsInstances() error {
 	return nil
 }
 
-// Stateless reports whether the daemon keeps no state to hand over: the kernel holds the state
-// of the NBD device of a daemon of the nbd driver, a new daemon takes the device over when started.
+// Stateless reports whether a new daemon can take over without receiving the states of this one.
 func (d *Daemon) Stateless() bool {
 	return d.States.FsDriver == config.FsDriverNbd
 }

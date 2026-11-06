@@ -59,8 +59,7 @@ type Filesystem struct {
 	nydusdBinaryPath    string
 	rootMountpoint      string
 	snapshotMutexMap    sync.Map
-	// nbdAllocMu serializes NBD device allocations of the nbd driver.
-	nbdAllocMu sync.Mutex
+	nbdAllocMu          sync.Mutex
 }
 
 // NewFileSystem initialize Filesystem instance
@@ -899,8 +898,7 @@ func (fs *Filesystem) MountPoint(snapshotID string) (string, error) {
 	return "", errdefs.ErrNotFound
 }
 
-// NBDDevice returns the NBD device serving the image of a snapshot mounted by the nbd driver,
-// or "" for other drivers.
+// NBDDevice returns the NBD device serving the image of a snapshot, or "" if none.
 func (fs *Filesystem) NBDDevice(snapshotID string) string {
 	rafs := racache.RafsGlobalCache.Get(snapshotID)
 	if rafs == nil || rafs.GetFsDriver() != config.FsDriverNbd {
@@ -1127,14 +1125,12 @@ func (fs *Filesystem) createNBDDaemon(fsManager *manager.Manager, mountpoint str
 	return fs.createDaemon(fsManager, config.DaemonModeDedicated, mountpoint, 0, daemon.WithNBDDevice(device))
 }
 
-// attachNBD mounts the EROFS image of the NBD device of a running daemon of the nbd driver
-// at its mountpoint. It is idempotent, and a no-op for other drivers.
+// attachNBD mounts the NBD device of a running daemon as EROFS at its mountpoint.
 func (fs *Filesystem) attachNBD(d *daemon.Daemon) error {
 	if d.States.FsDriver != config.FsDriverNbd {
 		return nil
 	}
 	device := d.States.NBDDevice
-	// Only a tuning: the device works with the kernel defaults.
 	if err := nbd.Tune(device); err != nil {
 		log.L.WithError(err).Warnf("tune %s", device)
 	}

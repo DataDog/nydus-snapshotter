@@ -239,11 +239,10 @@ func (m *Manager) DoDaemonUpgrade(d *daemon.Daemon, nydusdPath string, manager *
 	return newDaemon, err
 }
 
-// UpgradeStatelessDaemon replaces stateless daemon d by newDaemon, started by cmd: d exits keeping
-// its NBD device configured, newDaemon takes the device over when it starts. The kernel queues the
-// requests to the device meanwhile.
+// UpgradeStatelessDaemon replaces stateless daemon d by newDaemon, started by cmd. The kernel
+// queues the requests to the NBD device until newDaemon takes it over.
 func (m *Manager) UpgradeStatelessDaemon(d, newDaemon *daemon.Daemon, cmd *exec.Cmd) error {
-	// The device has no server between the exit of d and the start of newDaemon: fail early.
+	// Fail before the device loses its server.
 	if _, err := exec.LookPath(cmd.Path); err != nil {
 		return errors.Wrap(err, "check new nydusd binary")
 	}
@@ -257,7 +256,6 @@ func (m *Manager) UpgradeStatelessDaemon(d, newDaemon *daemon.Daemon, cmd *exec.
 		log.L.Warnf("wait old daemon %s exit failed: %v", d.ID(), err)
 	}
 	if err := cmd.Start(); err != nil {
-		// d exited: start it again so that its device is taken over again.
 		if rerr := m.StartDaemon(d); rerr != nil {
 			log.L.WithError(rerr).Errorf("restart daemon %s after failed upgrade", d.ID())
 		}

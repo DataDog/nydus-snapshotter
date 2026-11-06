@@ -211,7 +211,7 @@ func (m *Manager) BuildDaemonCommand(d *daemon.Daemon, bin string, upgrade bool)
 		cmdOpts = append(cmdOpts, command.WithLogRotationSize(d.States.LogRotationSize))
 	}
 
-	// A stateless daemon has no state to take over: it starts as a new daemon.
+	// A stateless daemon starts as a new daemon.
 	if upgrade && !d.Stateless() {
 		cmdOpts = append(cmdOpts, command.WithUpgrade())
 	}

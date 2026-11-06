@@ -1212,15 +1212,14 @@ func (o *snapshotter) mountRemote(ctx context.Context, labels map[string]string,
 		}
 	}
 
-	// VM runtimes attach the NBD device serving the image of a container rootfs to the
-	// guest. It cannot hold other layers stacked on the image: those keep the mount of
-	// the image on the host.
-	var nbdDevice string
+	// Layers stacked on the image cannot be attached with its NBD device.
 	if s.Kind == snapshots.KindActive && len(lowerPaths) == 1 {
-		nbdDevice = o.fs.NBDDevice(id)
+		if device := o.fs.NBDDevice(id); device != "" {
+			return o.mountWithNBDVolume(ctx, overlayOptions, device)
+		}
 	}
-	if o.enableKataVolume || nbdDevice != "" {
-		return o.mountWithKataVolume(ctx, id, overlayOptions, key, nbdDevice)
+	if o.enableKataVolume {
+		return o.mountWithKataVolume(ctx, id, overlayOptions, key)
 	}
 	// Add `extraoption` if NydusOverlayFS is enable or daemonMode is `None`
 	if o.enableNydusOverlayFS || config.GetDaemonMode() == config.DaemonModeNone {
