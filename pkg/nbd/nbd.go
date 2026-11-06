@@ -10,10 +10,12 @@
 package nbd
 
 import (
-	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/pkg/errors"
 	"golang.org/x/sys/unix"
@@ -22,45 +24,30 @@ import (
 	"github.com/containerd/nydus-snapshotter/pkg/utils/mount"
 )
 
-const (
-	// MaxDevices bounds the device indices Allocate considers. Only devices created by the nbd
-	// module (its nbds_max parameter) are used: nydusd keeps them on disconnect.
-	MaxDevices = 4096
-)
+// Overridden by tests.
+var sysBlockDir = "/sys/block"
 
-var (
-	// Overridden by tests.
-	sysBlockDir = "/sys/block"
-	devDir      = "/dev"
-)
-
-// Device returns the path of NBD device index.
-func Device(index int) string {
-	return filepath.Join(devDir, fmt.Sprintf("nbd%d", index))
-}
-
-// configured reports whether NBD device index is configured: the kernel exposes the pid of
-// the process which configured it until it is disconnected, even if that process died.
-func configured(index int) bool {
-	_, err := os.Stat(filepath.Join(sysBlockDir, fmt.Sprintf("nbd%d", index), "pid"))
-	return err == nil
-}
-
-// exists reports whether the kernel has NBD device index.
-func exists(index int) bool {
-	_, err := os.Stat(filepath.Join(sysBlockDir, fmt.Sprintf("nbd%d", index)))
-	return err == nil
-}
-
-// Allocate returns the lowest existing NBD device neither in inUse nor configured in the
-// kernel. The caller serializes allocations and records the device before releasing its lock.
+// Allocate returns the lowest NBD device neither in inUse nor configured in the kernel. Only
+// the devices the nbd module created (its nbds_max parameter) are used: nydusd keeps them on
+// disconnect. The caller serializes allocations and records the device before releasing its lock.
 func Allocate(inUse map[string]bool) (string, error) {
-	for i := 0; i < MaxDevices; i++ {
-		d := Device(i)
-		if !exists(i) || inUse[d] || configured(i) {
+	paths, err := filepath.Glob(filepath.Join(sysBlockDir, "nbd*"))
+	if err != nil {
+		return "", err
+	}
+	index := func(p string) int {
+		i, _ := strconv.Atoi(strings.TrimPrefix(filepath.Base(p), "nbd"))
+		return i
+	}
+	slices.SortFunc(paths, func(a, b string) int { return index(a) - index(b) })
+	for _, p := range paths {
+		device := "/dev/" + filepath.Base(p)
+		// The kernel exposes the pid of the process which configured a device until it is
+		// disconnected, even if that process died.
+		if _, err := os.Stat(filepath.Join(p, "pid")); inUse[device] || err == nil {
 			continue
 		}
-		return d, nil
+		return device, nil
 	}
 	return "", errors.New("no free NBD device, is the nbd module loaded with enough nbds_max?")
 }
@@ -116,10 +103,11 @@ func Mount(device, mountpoint string) error {
 
 // Umount unmounts the EROFS image at mountpoint, if mounted.
 func Umount(mountpoint string) error {
-	if _, err := os.Stat(mountpoint); os.IsNotExist(err) {
+	mounted, err := mount.IsMountpoint(mountpoint)
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	if mounted, err := mount.IsMountpoint(mountpoint); err != nil || !mounted {
+	if err != nil || !mounted {
 		return err
 	}
 	return errors.Wrapf(unix.Unmount(mountpoint, 0), "umount %s", mountpoint)

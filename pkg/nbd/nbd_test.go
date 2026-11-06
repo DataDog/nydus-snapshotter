@@ -17,15 +17,13 @@ import (
 	"github.com/containerd/nydus-snapshotter/config/daemonconfig"
 )
 
-// fakeSys points sysfs and /dev at a temporary directory holding the given NBD devices; the
-// configured ones expose a pid like the kernel does.
+// fakeSys points sysfs at a temporary directory holding the given NBD devices; the configured
+// ones expose a pid like the kernel does.
 func fakeSys(t *testing.T, devices []string, configured []string) {
 	t.Helper()
-	root := t.TempDir()
-	oldSys, oldDev := sysBlockDir, devDir
-	sysBlockDir, devDir = filepath.Join(root, "sys"), filepath.Join(root, "dev")
-	t.Cleanup(func() { sysBlockDir, devDir = oldSys, oldDev })
-	require.NoError(t, os.MkdirAll(devDir, 0o755))
+	old := sysBlockDir
+	sysBlockDir = t.TempDir()
+	t.Cleanup(func() { sysBlockDir = old })
 	for _, d := range devices {
 		require.NoError(t, os.MkdirAll(filepath.Join(sysBlockDir, d, "queue"), 0o755))
 	}
@@ -39,24 +37,25 @@ func TestAllocate(t *testing.T) {
 		Name       string
 		Devices    []string
 		Configured []string
-		InUse      []int
-		Want       int
+		InUse      []string
+		Want       string
 		WantErr    bool
 	}{
-		{Name: "FirstDevice", Devices: []string{"nbd0", "nbd1"}, Want: 0},
-		{Name: "SkipsConfigured", Devices: []string{"nbd0", "nbd1"}, Configured: []string{"nbd0"}, Want: 1},
-		{Name: "SkipsInUse", Devices: []string{"nbd0", "nbd1"}, InUse: []int{0}, Want: 1},
+		{Name: "FirstDevice", Devices: []string{"nbd0", "nbd1"}, Want: "/dev/nbd0"},
+		{Name: "NumericOrder", Devices: []string{"nbd10", "nbd2"}, Want: "/dev/nbd2"},
+		{Name: "SkipsConfigured", Devices: []string{"nbd0", "nbd1"}, Configured: []string{"nbd0"}, Want: "/dev/nbd1"},
+		{Name: "SkipsInUse", Devices: []string{"nbd0", "nbd1"}, InUse: []string{"/dev/nbd0"}, Want: "/dev/nbd1"},
 		// Regression: a missing device cannot be connected.
-		{Name: "SkipsMissingDevice", Devices: []string{"nbd1"}, Want: 1},
-		{Name: "AllBusy", Devices: []string{"nbd0", "nbd1"}, Configured: []string{"nbd0"}, InUse: []int{1}, WantErr: true},
+		{Name: "SkipsMissingDevice", Devices: []string{"nbd1"}, Want: "/dev/nbd1"},
+		{Name: "AllBusy", Devices: []string{"nbd0", "nbd1"}, Configured: []string{"nbd0"}, InUse: []string{"/dev/nbd1"}, WantErr: true},
 		{Name: "NoModuleLoaded", WantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.Name, func(t *testing.T) {
 			fakeSys(t, tt.Devices, tt.Configured)
 			inUse := map[string]bool{}
-			for _, i := range tt.InUse {
-				inUse[Device(i)] = true
+			for _, d := range tt.InUse {
+				inUse[d] = true
 			}
 
 			device, err := Allocate(inUse)
@@ -65,7 +64,7 @@ func TestAllocate(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, Device(tt.Want), device)
+			assert.Equal(t, tt.Want, device)
 		})
 	}
 }
