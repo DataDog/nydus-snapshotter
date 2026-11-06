@@ -64,8 +64,7 @@ func (m *Manager) handleDaemonDeathEvent() {
 			go m.doDaemonRestart(d)
 		case config.RecoverPolicyFailover:
 			log.L.Infof("Do failover for daemon %s", ev.daemonID)
-			if d.States.FsDriver == config.FsDriverNbd {
-				// NBD daemons keep no state: a new daemon takes the device over when started.
+			if d.Stateless() {
 				go m.doDaemonRestart(d)
 			} else {
 				go m.doDaemonFailover(d)
@@ -165,14 +164,13 @@ func (m *Manager) DoDaemonUpgrade(d *daemon.Daemon, nydusdPath string, manager *
 	upgradingSocket := path.Join(path.Dir(d.GetAPISock()), next)
 	newDaemon.States.APISocket = upgradingSocket
 
-	nbd := d.States.FsDriver == config.FsDriverNbd
-	cmd, err := manager.BuildDaemonCommand(newDaemon, nydusdPath, !nbd)
+	cmd, err := manager.BuildDaemonCommand(newDaemon, nydusdPath, !d.Stateless())
 	if err != nil {
 		return nil, err
 	}
 
-	if nbd {
-		if err := manager.UpgradeNBDDaemon(d, newDaemon, cmd); err != nil {
+	if d.Stateless() {
+		if err := manager.UpgradeStatelessDaemon(d, newDaemon, cmd); err != nil {
 			return nil, err
 		}
 		if err := manager.UpdateDaemon(newDaemon); err != nil {
@@ -241,10 +239,10 @@ func (m *Manager) DoDaemonUpgrade(d *daemon.Daemon, nydusdPath string, manager *
 	return newDaemon, err
 }
 
-// UpgradeNBDDaemon replaces daemon d of the nbd driver by newDaemon, started by cmd. NBD daemons
-// keep no state: d exits keeping its device configured, newDaemon takes the device over when it
-// starts. The kernel queues the requests to the device meanwhile.
-func (m *Manager) UpgradeNBDDaemon(d, newDaemon *daemon.Daemon, cmd *exec.Cmd) error {
+// UpgradeStatelessDaemon replaces stateless daemon d by newDaemon, started by cmd: d exits keeping
+// its NBD device configured, newDaemon takes the device over when it starts. The kernel queues the
+// requests to the device meanwhile.
+func (m *Manager) UpgradeStatelessDaemon(d, newDaemon *daemon.Daemon, cmd *exec.Cmd) error {
 	// The device has no server between the exit of d and the start of newDaemon: fail early.
 	if _, err := exec.LookPath(cmd.Path); err != nil {
 		return errors.Wrap(err, "check new nydusd binary")

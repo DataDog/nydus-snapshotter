@@ -182,8 +182,7 @@ func (m *Manager) recoverRafsInstances(ctx context.Context,
 		}
 
 		log.L.Debugf("found RAFS instance %#v", r)
-		if r.GetFsDriver() == config.FsDriverFscache || r.GetFsDriver() == config.FsDriverFusedev ||
-			r.GetFsDriver() == config.FsDriverNbd {
+		if config.UsesNydusd(r.GetFsDriver()) {
 			d := (*recoveringDaemons)[r.DaemonID]
 			if d != nil {
 				d.AddRafsInstance(r)

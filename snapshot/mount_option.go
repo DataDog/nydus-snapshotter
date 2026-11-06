@@ -146,7 +146,7 @@ func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overla
 		}
 	}
 
-	// Insert Kata volume for the NBD device serving the image
+	// Insert Kata volume for nbd
 	if nbdDevice != "" {
 		opt, err := o.prepareKataVirtualVolume("", nbdDevice, KataVirtualVolumeImageRawBlockType, "erofs", []string{"ro"}, nil)
 		if err != nil {

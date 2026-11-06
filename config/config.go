@@ -119,6 +119,11 @@ const (
 	FsDriverNbd      string = constant.FsDriverNbd
 )
 
+// UsesNydusd reports whether filesystem driver fsDriver serves images through nydusd daemons.
+func UsesNydusd(fsDriver string) bool {
+	return fsDriver == FsDriverFscache || fsDriver == FsDriverFusedev || fsDriver == FsDriverNbd
+}
+
 const (
 	FailoverPolicyNone   string = constant.FailoverPolicyNone
 	FailoverPolicyResend string = constant.FailoverPolicyResend

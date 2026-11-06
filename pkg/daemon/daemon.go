@@ -465,10 +465,15 @@ func (d *Daemon) UmountRafsInstances() error {
 	return nil
 }
 
+// Stateless reports whether the daemon keeps no state to hand over: the kernel holds the state
+// of the NBD device of a daemon of the nbd driver, a new daemon takes the device over when started.
+func (d *Daemon) Stateless() bool {
+	return d.States.FsDriver == config.FsDriverNbd
+}
+
 func (d *Daemon) SendStates() {
 	su := d.Supervisor
-	// NBD daemons keep no state, the kernel does.
-	if su != nil && d.States.FsDriver != config.FsDriverNbd {
+	if su != nil && !d.Stateless() {
 		// TODO: This should be optional by checking snapshotter's configuration.
 		// FIXME: Is it possible the states are overwritten during two API mounts.
 		// FIXME: What if nydusd does not support sending states.

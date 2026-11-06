@@ -24,7 +24,6 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 
-	"github.com/containerd/nydus-snapshotter/config"
 	"github.com/containerd/nydus-snapshotter/pkg/daemon"
 	"github.com/containerd/nydus-snapshotter/pkg/daemon/types"
 	"github.com/containerd/nydus-snapshotter/pkg/errdefs"
@@ -405,14 +404,13 @@ func (sc *Controller) upgradeNydusDaemon(d *daemon.Daemon, c upgradeRequest, man
 	upgradingSocket := path.Join(path.Dir(d.GetAPISock()), next)
 	newDaemon.States.APISocket = upgradingSocket
 
-	nbd := d.States.FsDriver == config.FsDriverNbd
-	cmd, err := manager.BuildDaemonCommand(&newDaemon, c.NydusdPath, !nbd)
+	cmd, err := manager.BuildDaemonCommand(&newDaemon, c.NydusdPath, !d.Stateless())
 	if err != nil {
 		return err
 	}
 
-	if nbd {
-		if err := manager.UpgradeNBDDaemon(d, &newDaemon, cmd); err != nil {
+	if d.Stateless() {
+		if err := manager.UpgradeStatelessDaemon(d, &newDaemon, cmd); err != nil {
 			return err
 		}
 		return manager.UpdateDaemonLocked(&newDaemon)

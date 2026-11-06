@@ -284,7 +284,7 @@ func (fs *Filesystem) WaitUntilReady(snapshotID string, labels map[string]string
 		return errors.Wrapf(errdefs.ErrNotFound, "no instance %s", rafsKey)
 	}
 
-	if isDaemonDriver(rafs.GetFsDriver()) {
+	if config.UsesNydusd(rafs.GetFsDriver()) {
 		d, err := fs.getDaemonByRafs(rafs)
 		if err != nil {
 			return errors.Wrapf(err, "snapshot id %s daemon id %s", snapshotID, rafs.DaemonID)
@@ -449,7 +449,7 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 	}
 
 	var d *daemon.Daemon
-	if isDaemonDriver(fsDriver) {
+	if config.UsesNydusd(fsDriver) {
 		bootstrap, err := rafs.BootstrapFile()
 		if err != nil {
 			return errors.Wrapf(err, "find bootstrap file snapshot %s", snapshotID)
@@ -577,7 +577,7 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 	}
 
 	// Wait for the daemon to be ready before persisting the RAFS instance
-	if err == nil && isDaemonDriver(fsDriver) {
+	if err == nil && config.UsesNydusd(fsDriver) {
 		if err = d.WaitUntilState(types.DaemonStateRunning); err != nil {
 			return errors.Wrapf(err, "daemon %s failed to reach RUNNING for snapshot %s", d.ID(), snapshotID)
 		}
@@ -900,16 +900,17 @@ func (fs *Filesystem) MountPoint(snapshotID string) (string, error) {
 }
 
 // NBDDevice returns the NBD device serving the image of a snapshot mounted by the nbd driver,
-// or "" for other snapshots.
+// or "" for other drivers.
 func (fs *Filesystem) NBDDevice(snapshotID string) string {
 	rafs := racache.RafsGlobalCache.Get(snapshotID)
 	if rafs == nil || rafs.GetFsDriver() != config.FsDriverNbd {
 		return ""
 	}
-	if d, err := fs.getDaemonByRafs(rafs); err == nil {
-		return d.States.NBDDevice
+	d, err := fs.getDaemonByRafs(rafs)
+	if err != nil {
+		return ""
 	}
-	return ""
+	return d.States.NBDDevice
 }
 
 func (fs *Filesystem) BootstrapFile(id string) (string, error) {
@@ -948,7 +949,7 @@ func (fs *Filesystem) mountRemote(fsManager *manager.Manager, useSharedDaemon bo
 func (fs *Filesystem) decideDaemonMountpoint(fsDriver string, isSharedDaemonMode bool, rafs *racache.Rafs) (string, error) {
 	m := ""
 
-	if isDaemonDriver(fsDriver) {
+	if config.UsesNydusd(fsDriver) {
 		if isSharedDaemonMode {
 			m = fs.rootMountpoint
 		} else {
@@ -1106,12 +1107,6 @@ func (fs *Filesystem) GetDaemonByID(id string) (*daemon.Daemon, error) {
 		}
 	}
 	return nil, errdefs.ErrNotFound
-}
-
-// isDaemonDriver reports whether filesystem driver fsDriver serves images through nydusd.
-func isDaemonDriver(fsDriver string) bool {
-	return fsDriver == config.FsDriverFscache || fsDriver == config.FsDriverFusedev ||
-		fsDriver == config.FsDriverNbd
 }
 
 // createNBDDaemon creates a dedicated daemon of the nbd driver with a free NBD device.
