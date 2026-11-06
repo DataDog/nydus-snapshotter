@@ -404,7 +404,7 @@ func (sc *Controller) upgradeNydusDaemon(d *daemon.Daemon, c upgradeRequest, man
 	upgradingSocket := path.Join(path.Dir(d.GetAPISock()), next)
 	newDaemon.States.APISocket = upgradingSocket
 
-	cmd, err := manager.BuildDaemonCommand(&newDaemon, c.NydusdPath, !d.Stateless())
+	cmd, err := manager.BuildDaemonCommand(&newDaemon, c.NydusdPath, true)
 	if err != nil {
 		return err
 	}

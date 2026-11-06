@@ -152,9 +152,6 @@ func (m *Manager) BuildDaemonCommand(d *daemon.Daemon, bin string, upgrade bool)
 			command.WithConfig(d.ConfigFile("")),
 			command.WithBootstrap(bootstrap),
 		)
-		if nydusdThreadNum != 0 {
-			cmdOpts = append(cmdOpts, command.WithNBDThreads(nydusdThreadNum))
-		}
 	default:
 		cmdOpts = append(cmdOpts, command.WithMode("fuse"), command.WithMountpoint(d.HostMountpoint()))
 		if nydusdThreadNum != 0 {
@@ -214,7 +211,8 @@ func (m *Manager) BuildDaemonCommand(d *daemon.Daemon, bin string, upgrade bool)
 		cmdOpts = append(cmdOpts, command.WithLogRotationSize(d.States.LogRotationSize))
 	}
 
-	if upgrade {
+	// A stateless daemon has no state to take over: it starts as a new daemon.
+	if upgrade && !d.Stateless() {
 		cmdOpts = append(cmdOpts, command.WithUpgrade())
 	}
 

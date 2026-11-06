@@ -46,8 +46,8 @@ func TestBuildNBDCommand(t *testing.T) {
 		{
 			Name: "Start",
 			Opts: []Opt{WithMode("nbd"), WithNBDDevice("/dev/nbd3"), WithConfig("/c.json"),
-				WithBootstrap("/image.boot"), WithNBDThreads(4), WithAPISock("/api.sock")},
-			Want: "nbd --config /c.json --bootstrap /image.boot --apisock /api.sock --threads 4 /dev/nbd3",
+				WithBootstrap("/image.boot"), WithAPISock("/api.sock")},
+			Want: "nbd --config /c.json --bootstrap /image.boot --apisock /api.sock /dev/nbd3",
 		},
 		{
 			Name: "WithSupervisor",

@@ -55,12 +55,12 @@ type Filesystem struct {
 	indexMgr            *index.Manager
 	stargzResolver      *stargz.Resolver
 	tarfsMgr            *tarfs.Manager
+	verifier            *signature.Verifier
+	nydusdBinaryPath    string
+	rootMountpoint      string
+	snapshotMutexMap    sync.Map
 	// nbdAllocMu serializes NBD device allocations of the nbd driver.
-	nbdAllocMu       sync.Mutex
-	verifier         *signature.Verifier
-	nydusdBinaryPath string
-	rootMountpoint   string
-	snapshotMutexMap sync.Map
+	nbdAllocMu sync.Mutex
 }
 
 // NewFileSystem initialize Filesystem instance
@@ -578,10 +578,10 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 
 	// Wait for the daemon to be ready before persisting the RAFS instance
 	if err == nil && config.UsesNydusd(fsDriver) {
-		if err = d.WaitUntilState(types.DaemonStateRunning); err != nil {
+		if err := d.WaitUntilState(types.DaemonStateRunning); err != nil {
 			return errors.Wrapf(err, "daemon %s failed to reach RUNNING for snapshot %s", d.ID(), snapshotID)
 		}
-		if err = fs.attachNBD(d); err != nil {
+		if err := fs.attachNBD(d); err != nil {
 			return errors.Wrapf(err, "mount NBD device of snapshot %s", snapshotID)
 		}
 	}

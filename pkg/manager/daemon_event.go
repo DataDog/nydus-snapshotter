@@ -164,7 +164,7 @@ func (m *Manager) DoDaemonUpgrade(d *daemon.Daemon, nydusdPath string, manager *
 	upgradingSocket := path.Join(path.Dir(d.GetAPISock()), next)
 	newDaemon.States.APISocket = upgradingSocket
 
-	cmd, err := manager.BuildDaemonCommand(newDaemon, nydusdPath, !d.Stateless())
+	cmd, err := manager.BuildDaemonCommand(newDaemon, nydusdPath, true)
 	if err != nil {
 		return nil, err
 	}

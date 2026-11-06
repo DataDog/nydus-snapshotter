@@ -38,9 +38,8 @@ type DaemonCommand struct {
 	PrefetchFiles   string `type:"param" name:"prefetch-files"`
 	BackendSource   string `type:"param" name:"backend-source"`
 	FailoverPolicy  string `type:"param" name:"failover-policy"`
-	// nydusd nbd options
-	NBDThreads string `type:"param" name:"threads"`
-	NBDDevice  string `type:"positional"`
+	// NBD device served by nydusd nbd
+	NBDDevice string `type:"positional"`
 }
 
 // Build exec style command line
@@ -206,13 +205,6 @@ func WithUpgrade() Opt {
 func WithNBDDevice(device string) Opt {
 	return func(cmd *DaemonCommand) {
 		cmd.NBDDevice = device
-	}
-}
-
-// WithNBDThreads sets the number of connections nydusd nbd serves the device with.
-func WithNBDThreads(num int) Opt {
-	return func(cmd *DaemonCommand) {
-		cmd.NBDThreads = strconv.Itoa(num)
 	}
 }
 
