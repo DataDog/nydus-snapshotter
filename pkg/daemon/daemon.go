@@ -61,6 +61,8 @@ type ConfigState struct {
 	FailoverPolicy  string
 	// Where the configuration file resides, all rafs instances share the same configuration template
 	ConfigDir string
+	// NBD device served by the daemon, kept across restarts and upgrades
+	NBDDevice string `json:",omitempty"`
 }
 
 // TODO: Record queried nydusd state
@@ -686,7 +688,7 @@ func (d *Daemon) Wait() error {
 	if d.Pid() > 0 {
 		if err := d.waitProcessLocked(); err != nil {
 			log.L.Errorf("failed to process wait, %v", err)
-		} else if d.HostMountpoint() != "" && config.GetFsDriver() == config.FsDriverFusedev {
+		} else if d.HostMountpoint() != "" && (config.GetFsDriver() == config.FsDriverFusedev || config.GetFsDriver() == config.FsDriverNbd) {
 			// No need to umount if the nydusd never performs mount. In other word, it does not
 			// associate with a host mountpoint.
 			if err := mount.WaitUntilUnmounted(d.HostMountpoint()); err != nil {

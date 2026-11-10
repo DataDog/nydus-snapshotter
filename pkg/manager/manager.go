@@ -25,6 +25,7 @@ import (
 	"github.com/containerd/nydus-snapshotter/pkg/daemon/types"
 	"github.com/containerd/nydus-snapshotter/pkg/errdefs"
 	"github.com/containerd/nydus-snapshotter/pkg/metrics/collector"
+	"github.com/containerd/nydus-snapshotter/pkg/nbd"
 	"github.com/containerd/nydus-snapshotter/pkg/rafs"
 	"github.com/containerd/nydus-snapshotter/pkg/store"
 	"github.com/containerd/nydus-snapshotter/pkg/supervisor"
@@ -182,7 +183,7 @@ func (m *Manager) recoverRafsInstances(ctx context.Context,
 		}
 
 		log.L.Debugf("found RAFS instance %#v", r)
-		if r.GetFsDriver() == config.FsDriverFscache || r.GetFsDriver() == config.FsDriverFusedev {
+		if config.UsesNydusd(r.GetFsDriver()) {
 			d := (*recoveringDaemons)[r.DaemonID]
 			if d != nil {
 				d.AddRafsInstance(r)
@@ -213,6 +214,17 @@ func (m *Manager) AddDaemon(daemon *daemon.Daemon) error {
 
 	if old := m.daemonCache.GetByDaemonID(daemon.ID(), nil); old != nil {
 		return errdefs.ErrAlreadyExists
+	}
+	if daemon.States.FsDriver == config.FsDriverNbd && daemon.States.NBDDevice == "" {
+		inUse := make(map[string]bool)
+		for _, d := range m.daemonCache.List() {
+			inUse[d.States.NBDDevice] = true
+		}
+		device, err := nbd.Allocate(inUse)
+		if err != nil {
+			return err
+		}
+		daemon.States.NBDDevice = device
 	}
 	if err := m.store.AddDaemon(daemon); err != nil {
 		return errors.Wrapf(err, "add daemon %s", daemon.ID())
@@ -372,7 +384,7 @@ func (m *Manager) recoverDaemons(ctx context.Context,
 			var d, _ = daemon.NewDaemon(opt...)
 			d.States = *s
 
-			if d.States.FsDriver == config.FsDriverFusedev {
+			if d.States.FsDriver == config.FsDriverFusedev || d.States.FsDriver == config.FsDriverNbd {
 				cfg, err := daemonconfig.NewDaemonConfig(d.States.FsDriver, d.ConfigFile(""))
 				if err != nil {
 					// A damaged record must not crash-loop the snapshotter. Keep

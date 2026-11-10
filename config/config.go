@@ -116,7 +116,13 @@ const (
 	FsDriverFscache  string = constant.FsDriverFscache
 	FsDriverNodev    string = constant.FsDriverNodev
 	FsDriverProxy    string = constant.FsDriverProxy
+	FsDriverNbd      string = constant.FsDriverNbd
 )
+
+// UsesNydusd reports whether filesystem driver fsDriver serves images through nydusd daemons.
+func UsesNydusd(fsDriver string) bool {
+	return fsDriver == FsDriverFscache || fsDriver == FsDriverFusedev || fsDriver == FsDriverNbd
+}
 
 const (
 	FailoverPolicyNone   string = constant.FailoverPolicyNone
@@ -147,14 +153,20 @@ type CgroupConfig struct {
 
 // Configure how to start and recover nydusd daemons
 type DaemonConfig struct {
-	NydusdPath       string `toml:"nydusd_path"`
-	NydusdConfigPath string `toml:"nydusd_config"`
-	NydusImagePath   string `toml:"nydusimage_path"`
-	RecoverPolicy    string `toml:"recover_policy"`
-	FsDriver         string `toml:"fs_driver"`
-	ThreadsNumber    int    `toml:"threads_number"`
-	LogRotationSize  int    `toml:"log_rotation_size"`
-	FailoverPolicy   string `toml:"failover_policy"`
+	NydusdPath       string    `toml:"nydusd_path"`
+	NydusdConfigPath string    `toml:"nydusd_config"`
+	NydusImagePath   string    `toml:"nydusimage_path"`
+	RecoverPolicy    string    `toml:"recover_policy"`
+	FsDriver         string    `toml:"fs_driver"`
+	ThreadsNumber    int       `toml:"threads_number"`
+	LogRotationSize  int       `toml:"log_rotation_size"`
+	FailoverPolicy   string    `toml:"failover_policy"`
+	NBDConfig        NBDConfig `toml:"nbd"`
+}
+
+type NBDConfig struct {
+	// Attributes of the block queue of the NBD devices, e.g. read_ahead_kb
+	QueueAttributes map[string]string `toml:"queue_attributes"`
 }
 
 type LoggingConfig struct {
@@ -328,11 +340,17 @@ func ValidateConfig(c *SnapshotterConfig) error {
 
 	if c.DaemonConfig.FsDriver != FsDriverFscache && c.DaemonConfig.FsDriver != FsDriverFusedev &&
 		c.DaemonConfig.FsDriver != FsDriverBlockdev && c.DaemonConfig.FsDriver != FsDriverNodev &&
-		c.DaemonConfig.FsDriver != FsDriverProxy {
+		c.DaemonConfig.FsDriver != FsDriverProxy && c.DaemonConfig.FsDriver != FsDriverNbd {
 		return errors.Errorf("invalid filesystem driver %q", c.DaemonConfig.FsDriver)
 	}
 	if _, err := ParseRecoverPolicy(c.DaemonConfig.RecoverPolicy); err != nil {
 		return err
+	}
+	if c.DaemonConfig.FsDriver == FsDriverNbd {
+		// The kernel keeps the device: a restarted daemon takes it over, no states to hand over.
+		if c.DaemonConfig.RecoverPolicy == RecoverPolicyFailover.String() {
+			return errors.New("nbd driver recovers daemons by restart, not failover")
+		}
 	}
 	if c.DaemonConfig.ThreadsNumber > 1024 {
 		return errors.Errorf("nydusd worker thread number %d is too big, max 1024", c.DaemonConfig.ThreadsNumber)

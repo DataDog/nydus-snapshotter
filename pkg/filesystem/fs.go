@@ -37,6 +37,7 @@ import (
 	"github.com/containerd/nydus-snapshotter/pkg/index"
 	"github.com/containerd/nydus-snapshotter/pkg/label"
 	"github.com/containerd/nydus-snapshotter/pkg/manager"
+	"github.com/containerd/nydus-snapshotter/pkg/nbd"
 	racache "github.com/containerd/nydus-snapshotter/pkg/rafs"
 	"github.com/containerd/nydus-snapshotter/pkg/referrer"
 	"github.com/containerd/nydus-snapshotter/pkg/signature"
@@ -277,7 +278,7 @@ func (fs *Filesystem) WaitUntilReady(snapshotID string, labels map[string]string
 		return errors.Wrapf(errdefs.ErrNotFound, "no instance %s", rafsKey)
 	}
 
-	if rafs.GetFsDriver() == config.FsDriverFscache || rafs.GetFsDriver() == config.FsDriverFusedev {
+	if config.UsesNydusd(rafs.GetFsDriver()) {
 		d, err := fs.getDaemonByRafs(rafs)
 		if err != nil {
 			return errors.Wrapf(err, "snapshot id %s daemon id %s", snapshotID, rafs.DaemonID)
@@ -442,7 +443,7 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 	}
 
 	var d *daemon.Daemon
-	if fsDriver == config.FsDriverFscache || fsDriver == config.FsDriverFusedev {
+	if config.UsesNydusd(fsDriver) {
 		bootstrap, err := rafs.BootstrapFile()
 		if err != nil {
 			return errors.Wrapf(err, "find bootstrap file snapshot %s", snapshotID)
@@ -537,7 +538,7 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 		if err != nil {
 			err = errors.Wrapf(err, "mount file system by daemon %s, snapshot %s", d.ID(), snapshotID)
 		}
-	case config.FsDriverFusedev:
+	case config.FsDriverFusedev, config.FsDriverNbd:
 		err = fs.mountRemote(fsManager, useSharedDaemon, d, rafs)
 		if err != nil {
 			err = errors.Wrapf(err, "mount file system by daemon %s, snapshot %s", d.ID(), snapshotID)
@@ -562,9 +563,14 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 	}
 
 	// Wait for the daemon to be ready before persisting the RAFS instance
-	if err == nil && (fsDriver == config.FsDriverFscache || fsDriver == config.FsDriverFusedev) {
+	if err == nil && config.UsesNydusd(fsDriver) {
 		if err := d.WaitUntilState(types.DaemonStateRunning); err != nil {
 			return errors.Wrapf(err, "daemon %s failed to reach RUNNING for snapshot %s", d.ID(), snapshotID)
+		}
+		if fsDriver == config.FsDriverNbd {
+			if err := nbd.SetQueueAttributes(d.States.NBDDevice, config.GetNBDConfig().QueueAttributes); err != nil {
+				log.L.WithError(err).Warnf("set queue attributes of %s", d.States.NBDDevice)
+			}
 		}
 	}
 
@@ -708,7 +714,7 @@ func (fs *Filesystem) umountRafsInstances(rafsList []*racache.Rafs) error {
 
 func (fs *Filesystem) umountRafsInstance(rafs *racache.Rafs) error {
 	switch rafs.GetFsDriver() {
-	case config.FsDriverFscache, config.FsDriverFusedev:
+	case config.FsDriverFscache, config.FsDriverFusedev, config.FsDriverNbd:
 		fsManager, err := fs.getManager(rafs.GetFsDriver())
 		if err != nil {
 			return errors.Wrapf(err, "get manager for filesystem instance %s", rafs.DaemonID)
@@ -875,6 +881,19 @@ func (fs *Filesystem) MountPoint(snapshotID string) (string, error) {
 	return "", errdefs.ErrNotFound
 }
 
+// NBDDevice returns the NBD device serving the image of a snapshot, or "" if none.
+func (fs *Filesystem) NBDDevice(snapshotID string) string {
+	rafs := racache.RafsGlobalCache.Get(snapshotID)
+	if rafs == nil || rafs.GetFsDriver() != config.FsDriverNbd {
+		return ""
+	}
+	d, err := fs.getDaemonByRafs(rafs)
+	if err != nil {
+		return ""
+	}
+	return d.States.NBDDevice
+}
+
 func (fs *Filesystem) BootstrapFile(id string) (string, error) {
 	rafs := racache.RafsGlobalCache.Get(id)
 	if rafs == nil {
@@ -911,7 +930,7 @@ func (fs *Filesystem) mountRemote(fsManager *manager.Manager, useSharedDaemon bo
 func (fs *Filesystem) decideDaemonMountpoint(fsDriver string, isSharedDaemonMode bool, rafs *racache.Rafs) (string, error) {
 	m := ""
 
-	if fsDriver == config.FsDriverFscache || fsDriver == config.FsDriverFusedev {
+	if config.UsesNydusd(fsDriver) {
 		if isSharedDaemonMode {
 			m = fs.rootMountpoint
 		} else {
@@ -1050,7 +1069,7 @@ func (fs *Filesystem) getSharedDaemon(fsDriver string) (*daemon.Daemon, error) {
 
 func (fs *Filesystem) getDaemonByRafs(rafs *racache.Rafs) (*daemon.Daemon, error) {
 	switch rafs.GetFsDriver() {
-	case config.FsDriverFscache, config.FsDriverFusedev:
+	case config.FsDriverFscache, config.FsDriverFusedev, config.FsDriverNbd:
 		if fsManager, ok := fs.enabledManagers[rafs.GetFsDriver()]; ok {
 			if d := fsManager.GetByDaemonID(rafs.DaemonID); d != nil {
 				return d, nil

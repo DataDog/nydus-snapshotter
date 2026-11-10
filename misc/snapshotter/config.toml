@@ -27,7 +27,7 @@ pprof_address = ""
 nydusd_config = "/etc/nydus/nydusd-config.fusedev.json"
 nydusd_path = "/usr/local/bin/nydusd"
 nydusimage_path = "/usr/local/bin/nydus-image"
-# The fs driver can be one of the following options: fusedev, fscache, blockdev, proxy, or nodev.
+# The fs driver can be one of the following options: fusedev, fscache, blockdev, proxy, nbd, or nodev.
 # If `fs_driver` option is not specified, the default value is fusedev.
 fs_driver = "fusedev"
 # How to process when daemon dies: "none", "restart" or "failover"
@@ -39,6 +39,10 @@ threads_number = 4
 log_rotation_size = 100
 # Nydusd failover policy, can be "none", "resend" or "flush"
 failover_policy = "resend"
+
+# Attributes set in /sys/block/<device>/queue of the NBD devices of the nbd driver, e.g.
+# [daemon.nbd.queue_attributes]
+# read_ahead_kb = "4096"
 
 [cgroup]
 # Whether to use separate cgroup for nydusd.

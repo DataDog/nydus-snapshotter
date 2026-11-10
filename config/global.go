@@ -85,6 +85,10 @@ func GetDaemonThreadsNumber() int {
 	return globalConfig.origin.DaemonConfig.ThreadsNumber
 }
 
+func GetNBDConfig() NBDConfig {
+	return globalConfig.origin.DaemonConfig.NBDConfig
+}
+
 func GetDaemonFailoverPolicy() string {
 	return globalConfig.origin.DaemonConfig.FailoverPolicy
 }

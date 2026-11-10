@@ -29,6 +29,8 @@ const (
 	FsDriverNodev string = "nodev"
 	// Relay layer content download operation to other agents.
 	FsDriverProxy string = "proxy"
+	// Mount RAFS filesystem by using EROFS over an NBD device served by a dedicated nydusd.
+	FsDriverNbd string = "nbd"
 )
 
 const (

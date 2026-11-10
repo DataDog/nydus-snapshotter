@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/containerd/containerd/v2/core/mount"
@@ -145,7 +146,20 @@ func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overla
 		}
 	}
 
+	// Insert Kata volume for nbd, which only holds the image: not when layers are stacked on it
+	if device := o.fs.NBDDevice(id); device != "" && !slices.ContainsFunc(overlayOptions, isStackedLowerDir) {
+		options, err := o.mountWithNBDVolume(device)
+		if err != nil {
+			return []mount.Mount{}, errors.Wrapf(err, "create kata volume for nbd")
+		}
+		overlayOptions = append(overlayOptions, options...)
+		hasVolume = true
+	}
+
 	if hasVolume {
+		// containerd only drops volatile from its temporary mounts of the "overlay" type, and a
+		// volatile mount makes the next ones of the snapshot fail.
+		overlayOptions = slices.DeleteFunc(overlayOptions, func(o string) bool { return o == "volatile" })
 		log.G(ctx).Debugf("fuse.nydus-overlayfs mount options %v", overlayOptions)
 
 		mountType := "fuse.nydus-overlayfs"
@@ -165,6 +179,18 @@ func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overla
 	}
 
 	return overlayMount(overlayOptions), nil
+}
+
+func isStackedLowerDir(option string) bool {
+	return strings.HasPrefix(option, "lowerdir=") && strings.Contains(option, ":")
+}
+
+func (o *snapshotter) mountWithNBDVolume(device string) ([]string, error) {
+	option, err := o.prepareKataVirtualVolume("", device, KataVirtualVolumeImageRawBlockType, "erofs", []string{"ro"}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return []string{option}, nil
 }
 
 func (o *snapshotter) mountWithProxyVolume(rafs rafs.Rafs) ([]string, error) {
