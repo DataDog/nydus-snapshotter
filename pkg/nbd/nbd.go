@@ -10,7 +10,6 @@
 package nbd
 
 import (
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,10 +17,6 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
-	"golang.org/x/sys/unix"
-
-	"github.com/containerd/nydus-snapshotter/config"
-	"github.com/containerd/nydus-snapshotter/pkg/utils/mount"
 )
 
 var sysBlockDir = "/sys/block"
@@ -48,41 +43,13 @@ func Allocate(inUse map[string]bool) (string, error) {
 	return "", errors.New("no free NBD device, is the nbd module loaded with enough nbds_max?")
 }
 
-// SetQueueLimits sets the block queue limits of device, leaving the zero ones to the kernel.
-func SetQueueLimits(device string, limits config.NBDConfig) error {
-	for attr, kb := range map[string]int{"max_sectors_kb": limits.MaxSectorsKB, "read_ahead_kb": limits.ReadAheadKB} {
-		if kb == 0 {
-			continue
-		}
+// SetQueueAttributes sets attributes of the block queue of device.
+func SetQueueAttributes(device string, attributes map[string]string) error {
+	for attr, value := range attributes {
 		p := filepath.Join(sysBlockDir, filepath.Base(device), "queue", attr)
-		if err := os.WriteFile(p, []byte(strconv.Itoa(kb)), 0o644); err != nil {
+		if err := os.WriteFile(p, []byte(value), 0o644); err != nil {
 			return errors.Wrapf(err, "write %s", p)
 		}
 	}
 	return nil
-}
-
-// Mount mounts the EROFS image of device read-only at mountpoint, unless already mounted.
-func Mount(device, mountpoint string) error {
-	if mounted, err := mount.IsMountpoint(mountpoint); err != nil {
-		return err
-	} else if mounted {
-		return nil
-	}
-	if err := unix.Mount(device, mountpoint, "erofs", unix.MS_RDONLY, ""); err != nil {
-		return errors.Wrapf(err, "mount %s as erofs on %s", device, mountpoint)
-	}
-	return nil
-}
-
-// Umount unmounts the EROFS image at mountpoint, if mounted.
-func Umount(mountpoint string) error {
-	mounted, err := mount.IsMountpoint(mountpoint)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil || !mounted {
-		return err
-	}
-	return errors.Wrapf(unix.Unmount(mountpoint, 0), "umount %s", mountpoint)
 }

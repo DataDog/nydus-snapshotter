@@ -9,7 +9,6 @@ package manager
 
 import (
 	"fmt"
-	"os/exec"
 	"path"
 	"regexp"
 	"strconv"
@@ -64,11 +63,7 @@ func (m *Manager) handleDaemonDeathEvent() {
 			go m.doDaemonRestart(d)
 		case config.RecoverPolicyFailover:
 			log.L.Infof("Do failover for daemon %s", ev.daemonID)
-			if d.Stateless() {
-				go m.doDaemonRestart(d)
-			} else {
-				go m.doDaemonFailover(d)
-			}
+			go m.doDaemonFailover(d)
 		default:
 			// RecoverPolicyNone or RecoverPolicyInvalid - do nothing
 		}
@@ -169,17 +164,6 @@ func (m *Manager) DoDaemonUpgrade(d *daemon.Daemon, nydusdPath string, manager *
 		return nil, err
 	}
 
-	if d.Stateless() {
-		if err := manager.UpgradeStatelessDaemon(d, newDaemon, cmd); err != nil {
-			return nil, err
-		}
-		if err := manager.UpdateDaemon(newDaemon); err != nil {
-			return nil, err
-		}
-		log.L.Infof("Upgraded daemon success on socket %s", newDaemon.GetAPISock())
-		return newDaemon, nil
-	}
-
 	if err := supervisor.SendStatesTimeout(time.Second * 10); err != nil {
 		return nil, errors.Wrap(err, "Send states")
 	}
@@ -237,38 +221,6 @@ func (m *Manager) DoDaemonUpgrade(d *daemon.Daemon, nydusdPath string, manager *
 
 	log.L.Infof("Upgraded daemon success on socket %s", newDaemon.GetAPISock())
 	return newDaemon, err
-}
-
-// UpgradeStatelessDaemon replaces stateless daemon d by newDaemon, started by cmd. The kernel
-// queues the requests to the NBD device until newDaemon takes it over.
-func (m *Manager) UpgradeStatelessDaemon(d, newDaemon *daemon.Daemon, cmd *exec.Cmd) error {
-	// Fail before the device loses its server.
-	if _, err := exec.LookPath(cmd.Path); err != nil {
-		return errors.Wrap(err, "check new nydusd binary")
-	}
-	if err := m.UnsubscribeDaemonEvent(d); err != nil {
-		return errors.Wrap(err, "unsubscribe daemon event")
-	}
-	if err := d.Exit(); err != nil {
-		return errors.Wrap(err, "old daemon exits")
-	}
-	if err := d.WaitForExit(); err != nil {
-		log.L.Warnf("wait old daemon %s exit failed: %v", d.ID(), err)
-	}
-	if err := cmd.Start(); err != nil {
-		if rerr := m.StartDaemon(d); rerr != nil {
-			log.L.WithError(rerr).Errorf("restart daemon %s after failed upgrade", d.ID())
-		}
-		return errors.Wrap(err, "start process")
-	}
-	newDaemon.States.ProcessID = cmd.Process.Pid
-	if err := daemon.WaitUntilSocketExisted(newDaemon.GetAPISock(), newDaemon.States.ProcessID); err != nil {
-		return errors.Wrap(err, "wait for API socket")
-	}
-	if err := m.SubscribeDaemonEvent(newDaemon); err != nil {
-		return errors.Wrap(err, "subscribe new daemon event")
-	}
-	return errors.Wrapf(newDaemon.WaitUntilState(types.DaemonStateRunning), "wait for daemon %s", d.ID())
 }
 
 // Name next api socket path based on currently api socket path listened on.

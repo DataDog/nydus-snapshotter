@@ -153,10 +153,6 @@ func NewFileSystem(ctx context.Context, opt ...NewFSOpt) (*Filesystem, error) {
 				log.L.Warnf("Failed to recover mounts for daemon %s, skipping: %v", d.ID(), err)
 				return nil
 			}
-			if err := fs.attachNBD(d); err != nil {
-				log.L.Warnf("Failed to mount the NBD device of daemon %s, skipping: %v", d.ID(), err)
-				return nil
-			}
 			fs.TryRetainSharedDaemon(d)
 			return nil
 		})
@@ -571,8 +567,10 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 		if err := d.WaitUntilState(types.DaemonStateRunning); err != nil {
 			return errors.Wrapf(err, "daemon %s failed to reach RUNNING for snapshot %s", d.ID(), snapshotID)
 		}
-		if err := fs.attachNBD(d); err != nil {
-			return errors.Wrapf(err, "mount NBD device of snapshot %s", snapshotID)
+		if fsDriver == config.FsDriverNbd {
+			if err := nbd.SetQueueAttributes(d.States.NBDDevice, config.GetNBDConfig().QueueAttributes); err != nil {
+				log.L.WithError(err).Warnf("set queue attributes of %s", d.States.NBDDevice)
+			}
 		}
 	}
 
@@ -720,12 +718,6 @@ func (fs *Filesystem) umountRafsInstance(rafs *racache.Rafs) error {
 		fsManager, err := fs.getManager(rafs.GetFsDriver())
 		if err != nil {
 			return errors.Wrapf(err, "get manager for filesystem instance %s", rafs.DaemonID)
-		}
-		// Unmount the EROFS image before nydusd disconnects its device.
-		if rafs.GetFsDriver() == config.FsDriverNbd {
-			if err := nbd.Umount(rafs.GetMountpoint()); err != nil {
-				return errors.Wrapf(err, "umount NBD image of snapshot %s", rafs.SnapshotID)
-			}
 		}
 
 		daemon, daemonErr := fs.getDaemonByRafs(rafs)
@@ -1095,19 +1087,4 @@ func (fs *Filesystem) GetDaemonByID(id string) (*daemon.Daemon, error) {
 		}
 	}
 	return nil, errdefs.ErrNotFound
-}
-
-// attachNBD mounts the NBD device of a running daemon as EROFS at its mountpoint.
-func (fs *Filesystem) attachNBD(d *daemon.Daemon) error {
-	if d.States.FsDriver != config.FsDriverNbd {
-		return nil
-	}
-	device := d.States.NBDDevice
-	if err := nbd.SetQueueLimits(device, config.GetNBDConfig()); err != nil {
-		log.L.WithError(err).Warnf("set queue limits of %s", device)
-	}
-	if err := os.MkdirAll(d.HostMountpoint(), 0755); err != nil {
-		return errors.Wrapf(err, "create mountpoint %s", d.HostMountpoint())
-	}
-	return nbd.Mount(device, d.HostMountpoint())
 }

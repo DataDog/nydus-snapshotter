@@ -1212,12 +1212,6 @@ func (o *snapshotter) mountRemote(ctx context.Context, labels map[string]string,
 		}
 	}
 
-	// Layers stacked on the image cannot be attached with its NBD device.
-	if s.Kind == snapshots.KindActive && len(lowerPaths) == 1 {
-		if device := o.fs.NBDDevice(id); device != "" {
-			return o.mountWithNBDVolume(overlayOptions, device)
-		}
-	}
 	if o.enableKataVolume {
 		return o.mountWithKataVolume(ctx, id, overlayOptions, key)
 	}

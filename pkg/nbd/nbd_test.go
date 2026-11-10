@@ -13,8 +13,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/containerd/nydus-snapshotter/config"
 )
 
 // fakeSys points sysfs at a temporary directory holding the given NBD devices; the configured
@@ -69,28 +67,29 @@ func TestAllocate(t *testing.T) {
 	}
 }
 
-func TestSetQueueLimits(t *testing.T) {
+func TestSetQueueAttributes(t *testing.T) {
 	tests := []struct {
-		Name   string
-		Limits config.NBDConfig
-		Want   map[string]string
+		Name       string
+		Device     string
+		Attributes map[string]string
+		WantErr    bool
 	}{
-		{Name: "Set", Limits: config.NBDConfig{MaxSectorsKB: 4096, ReadAheadKB: 1024},
-			Want: map[string]string{"max_sectors_kb": "4096", "read_ahead_kb": "1024"}},
-		{Name: "ZeroKeepsKernelDefault", Limits: config.NBDConfig{ReadAheadKB: 1024},
-			Want: map[string]string{"max_sectors_kb": "128", "read_ahead_kb": "1024"}},
+		{Name: "Set", Device: "nbd0", Attributes: map[string]string{"max_sectors_kb": "4096", "read_ahead_kb": "1024"}},
+		{Name: "None", Device: "nbd0"},
+		{Name: "MissingDevice", Device: "nbd1", Attributes: map[string]string{"read_ahead_kb": "1024"}, WantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.Name, func(t *testing.T) {
 			fakeSys(t, []string{"nbd0"}, nil)
-			for attr := range tt.Want {
-				require.NoError(t, os.WriteFile(filepath.Join(sysBlockDir, "nbd0", "queue", attr), []byte("128"), 0o644))
+
+			err := SetQueueAttributes("/dev/"+tt.Device, tt.Attributes)
+			if tt.WantErr {
+				assert.Error(t, err)
+				return
 			}
-
-			require.NoError(t, SetQueueLimits("/dev/nbd0", tt.Limits))
-
-			for attr, want := range tt.Want {
-				b, err := os.ReadFile(filepath.Join(sysBlockDir, "nbd0", "queue", attr))
+			require.NoError(t, err)
+			for attr, want := range tt.Attributes {
+				b, err := os.ReadFile(filepath.Join(sysBlockDir, tt.Device, "queue", attr))
 				require.NoError(t, err)
 				assert.Equal(t, want, string(b), attr)
 			}

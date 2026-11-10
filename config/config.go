@@ -164,10 +164,9 @@ type DaemonConfig struct {
 	NBDConfig        NBDConfig `toml:"nbd"`
 }
 
-// Block queue limits of the NBD devices of the nbd driver, in KiB. Zero keeps the kernel default.
 type NBDConfig struct {
-	MaxSectorsKB int `toml:"max_sectors_kb"`
-	ReadAheadKB  int `toml:"read_ahead_kb"`
+	// Attributes of the block queue of the NBD devices, e.g. read_ahead_kb
+	QueueAttributes map[string]string `toml:"queue_attributes"`
 }
 
 type LoggingConfig struct {
@@ -346,6 +345,12 @@ func ValidateConfig(c *SnapshotterConfig) error {
 	}
 	if _, err := ParseRecoverPolicy(c.DaemonConfig.RecoverPolicy); err != nil {
 		return err
+	}
+	if c.DaemonConfig.FsDriver == FsDriverNbd {
+		// The kernel keeps the device: a restarted daemon takes it over, no states to hand over.
+		if c.DaemonConfig.RecoverPolicy == RecoverPolicyFailover.String() {
+			return errors.New("nbd driver recovers daemons by restart, not failover")
+		}
 	}
 	if c.DaemonConfig.ThreadsNumber > 1024 {
 		return errors.Errorf("nydusd worker thread number %d is too big, max 1024", c.DaemonConfig.ThreadsNumber)

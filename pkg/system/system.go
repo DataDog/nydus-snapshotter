@@ -409,13 +409,6 @@ func (sc *Controller) upgradeNydusDaemon(d *daemon.Daemon, c upgradeRequest, man
 		return err
 	}
 
-	if d.Stateless() {
-		if err := manager.UpgradeStatelessDaemon(d, &newDaemon, cmd); err != nil {
-			return err
-		}
-		return manager.UpdateDaemonLocked(&newDaemon)
-	}
-
 	if err := supervisor.SendStatesTimeout(time.Second * 10); err != nil {
 		return errors.Wrap(err, "Send states")
 	}

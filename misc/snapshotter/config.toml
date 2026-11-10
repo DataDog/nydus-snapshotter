@@ -40,10 +40,9 @@ log_rotation_size = 100
 # Nydusd failover policy, can be "none", "resend" or "flush"
 failover_policy = "resend"
 
-[daemon.nbd]
-# Block queue limits of the NBD devices of the nbd driver, in KiB. 0 keeps the kernel default.
-max_sectors_kb = 0
-read_ahead_kb = 0
+# Attributes set in /sys/block/<device>/queue of the NBD devices of the nbd driver, e.g.
+# [daemon.nbd.queue_attributes]
+# read_ahead_kb = "4096"
 
 [cgroup]
 # Whether to use separate cgroup for nydusd.

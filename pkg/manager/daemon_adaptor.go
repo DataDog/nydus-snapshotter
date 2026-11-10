@@ -148,6 +148,7 @@ func (m *Manager) BuildDaemonCommand(d *daemon.Daemon, bin string, upgrade bool)
 		}
 		cmdOpts = append(cmdOpts,
 			command.WithMode("nbd"),
+			command.WithMountpoint(d.HostMountpoint()),
 			command.WithNBDDevice(d.States.NBDDevice),
 			command.WithConfig(d.ConfigFile("")),
 			command.WithBootstrap(bootstrap),
@@ -211,8 +212,7 @@ func (m *Manager) BuildDaemonCommand(d *daemon.Daemon, bin string, upgrade bool)
 		cmdOpts = append(cmdOpts, command.WithLogRotationSize(d.States.LogRotationSize))
 	}
 
-	// A stateless daemon starts as a new daemon.
-	if upgrade && !d.Stateless() {
+	if upgrade {
 		cmdOpts = append(cmdOpts, command.WithUpgrade())
 	}
 

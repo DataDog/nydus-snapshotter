@@ -464,14 +464,9 @@ func (d *Daemon) UmountRafsInstances() error {
 	return nil
 }
 
-// Stateless reports whether a new daemon can take over without receiving the states of this one.
-func (d *Daemon) Stateless() bool {
-	return d.States.FsDriver == config.FsDriverNbd
-}
-
 func (d *Daemon) SendStates() {
 	su := d.Supervisor
-	if su != nil && !d.Stateless() {
+	if su != nil {
 		// TODO: This should be optional by checking snapshotter's configuration.
 		// FIXME: Is it possible the states are overwritten during two API mounts.
 		// FIXME: What if nydusd does not support sending states.
@@ -693,7 +688,7 @@ func (d *Daemon) Wait() error {
 	if d.Pid() > 0 {
 		if err := d.waitProcessLocked(); err != nil {
 			log.L.Errorf("failed to process wait, %v", err)
-		} else if d.HostMountpoint() != "" && config.GetFsDriver() == config.FsDriverFusedev {
+		} else if d.HostMountpoint() != "" && (config.GetFsDriver() == config.FsDriverFusedev || config.GetFsDriver() == config.FsDriverNbd) {
 			// No need to umount if the nydusd never performs mount. In other word, it does not
 			// associate with a host mountpoint.
 			if err := mount.WaitUntilUnmounted(d.HostMountpoint()); err != nil {
@@ -708,17 +703,14 @@ func (d *Daemon) Wait() error {
 // When daemon dies, clean up its vestige before start a new one.
 func (d *Daemon) ClearVestige() {
 	mounter := mount.Mounter{}
-	switch d.States.FsDriver {
-	case config.FsDriverNbd:
-		// Keep the EROFS mount of the device: a new daemon takes the device over.
-	case config.FsDriverFscache:
+	if d.States.FsDriver == config.FsDriverFscache {
 		instances := d.RafsCache.List()
 		for _, i := range instances {
 			if err := mounter.Umount(i.GetMountpoint()); err != nil {
 				log.L.Warnf("Can't umount %s, %v", d.States.Mountpoint, err)
 			}
 		}
-	default:
+	} else {
 		log.L.Infof("Unmounting %s when clear vestige", d.HostMountpoint())
 		if err := mounter.Umount(d.HostMountpoint()); err != nil {
 			log.L.Warnf("Can't umount %s, %v", d.States.Mountpoint, err)
