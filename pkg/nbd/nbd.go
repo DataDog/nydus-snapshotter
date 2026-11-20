@@ -42,14 +42,3 @@ func Allocate(inUse map[string]bool) (string, error) {
 	}
 	return "", errors.New("no free NBD device, is the nbd module loaded with enough nbds_max?")
 }
-
-// SetQueueAttributes sets attributes of the block queue of device.
-func SetQueueAttributes(device string, attributes map[string]string) error {
-	for attr, value := range attributes {
-		p := filepath.Join(sysBlockDir, filepath.Base(device), "queue", attr)
-		if err := os.WriteFile(p, []byte(value), 0o644); err != nil {
-			return errors.Wrapf(err, "write %s", p)
-		}
-	}
-	return nil
-}

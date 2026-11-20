@@ -172,7 +172,8 @@ func NewFileSystem(ctx context.Context, opt ...NewFSOpt) (*Filesystem, error) {
 		for _, d := range liveDaemons {
 			d := d
 			egLive.Go(func() error {
-				if d.Supervisor == nil {
+				// Daemons of the nbd driver hand their connections over, see Manager.UpgradeDaemonByHandover.
+				if d.Supervisor == nil && d.States.FsDriver != config.FsDriverNbd {
 					log.L.Warnf("Daemon %s is skipped for hot upgrade because recover policy is not set to 'failover'", d.ID())
 					return nil
 				}
@@ -187,7 +188,7 @@ func NewFileSystem(ctx context.Context, opt ...NewFSOpt) (*Filesystem, error) {
 						log.L.Warnf("Failed to get filesystem manager for daemon %s, skipping: %v", d.ID(), err)
 						return nil
 					}
-					newDaemon, upgradeErr := fsManager.DoDaemonUpgrade(d, fs.nydusdBinaryPath, fsManager)
+					newDaemon, upgradeErr := fsManager.DoDaemonUpgrade(d, fs.nydusdBinaryPath)
 					if upgradeErr != nil {
 						log.L.Warnf("Daemon %s hot upgrade failed, skipping: %v", d.ID(), upgradeErr)
 						return nil
@@ -261,10 +262,20 @@ func (fs *Filesystem) TryStopSharedDaemon() {
 	}
 }
 
+// RafsInstanceID returns the key of the RAFS instance of a snapshot: one per user-namespace
+// mapping when nydusd applies the mapping, the snapshot for the nbd driver, whose mount
+// containerd id-maps.
+func RafsInstanceID(snapshotID string, labels map[string]string) (string, error) {
+	if config.GetFsDriver() == config.FsDriverNbd {
+		return snapshotID, nil
+	}
+	return label.RafsInstanceIDFromLabels(snapshotID, labels)
+}
+
 // WaitUntilReady wait until daemon ready by snapshotID, it will wait until nydus domain socket established
 // and the status of nydusd daemon must be ready
 func (fs *Filesystem) WaitUntilReady(snapshotID string, labels map[string]string) error {
-	rafsKey, err := label.RafsInstanceIDFromLabels(snapshotID, labels)
+	rafsKey, err := RafsInstanceID(snapshotID, labels)
 	if err != nil {
 		return errors.Wrapf(err, "parse id mapping for snapshot %s", snapshotID)
 	}
@@ -381,20 +392,24 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 		return errors.Wrapf(err, "parse id mapping for snapshot %s", snapshotID)
 	}
 
-	// Per-pod rafs cache key: two pods sharing the same image but with
-	// different user-namespace mappings get separate rafs instances.
-	rafsKey := label.RafsInstanceID(snapshotID, idMapping)
-
 	fsDriver := config.GetFsDriver()
 	if label.IsTarfsDataLayer(labels) {
 		fsDriver = config.FsDriverBlockdev
 	}
 
 	if idMapping != nil {
-		if fsDriver != config.FsDriverFusedev {
-			return errors.Errorf("id mapping (remap-ids) is only supported by the fusedev driver, got %q", fsDriver)
+		switch fsDriver {
+		case config.FsDriverFusedev:
+		case config.FsDriverNbd:
+			// containerd id-maps the mount of the image, see snapshotter.mountRemote.
+			idMapping = nil
+		default:
+			return errors.Errorf("id mapping (remap-ids) is only supported by the fusedev and nbd drivers, got %q", fsDriver)
 		}
 	}
+	// Per-pod rafs cache key: two pods sharing the same image but with
+	// different user-namespace mappings get separate rafs instances.
+	rafsKey := label.RafsInstanceID(snapshotID, idMapping)
 	isSharedFusedev := fsDriver == config.FsDriverFusedev && config.GetDaemonMode() == config.DaemonModeShared
 	useSharedDaemon := fsDriver == config.FsDriverFscache || isSharedFusedev
 
@@ -424,6 +439,11 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 	rafs, err = racache.NewRafs(rafsKey, imageID, fsDriver)
 	if err != nil {
 		return errors.Wrapf(err, "create rafs instance %s", snapshotID)
+	}
+	if fsDriver == config.FsDriverNbd {
+		if err := allocateNBDDevice(rafs); err != nil {
+			return errors.Wrapf(err, "allocate NBD device for snapshot %s", snapshotID)
+		}
 	}
 	if idMapping != nil {
 		rafs.SourceSnapshotID = snapshotID
@@ -567,11 +587,6 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
 		if err := d.WaitUntilState(types.DaemonStateRunning); err != nil {
 			return errors.Wrapf(err, "daemon %s failed to reach RUNNING for snapshot %s", d.ID(), snapshotID)
 		}
-		if fsDriver == config.FsDriverNbd {
-			if err := nbd.SetQueueAttributes(d.States.NBDDevice, config.GetNBDConfig().QueueAttributes); err != nil {
-				log.L.WithError(err).Warnf("set queue attributes of %s", d.States.NBDDevice)
-			}
-		}
 	}
 
 	// Persist it after associate instance after all the states are calculated.
@@ -663,9 +678,13 @@ func (fs *Filesystem) Umount(_ context.Context, snapshotID string) error {
 }
 
 func (fs *Filesystem) UmountByLabels(_ context.Context, snapshotID string, labels map[string]string) error {
-	rafsKey, err := label.RafsInstanceIDFromLabels(snapshotID, labels)
+	rafsKey, err := RafsInstanceID(snapshotID, labels)
 	if err != nil {
 		return errors.Wrapf(err, "parse id mapping for snapshot %s", snapshotID)
+	}
+	// No per-pod instance: the image instance is unmounted with the image.
+	if rafsKey == snapshotID {
+		return nil
 	}
 
 	rafs := racache.RafsGlobalCache.Get(rafsKey)
@@ -887,11 +906,28 @@ func (fs *Filesystem) NBDDevice(snapshotID string) string {
 	if rafs == nil || rafs.GetFsDriver() != config.FsDriverNbd {
 		return ""
 	}
-	d, err := fs.getDaemonByRafs(rafs)
-	if err != nil {
-		return ""
+	return rafs.NBDDevice
+}
+
+// allocateNBDDevice assigns r the lowest NBD device not owned by another rafs instance,
+// holding the global cache lock so concurrent mounts cannot pick the same one. The kernel
+// keeps the pid of a configured device, which nbd.Allocate skips.
+func allocateNBDDevice(r *racache.Rafs) error {
+	racache.RafsGlobalCache.Lock()
+	defer racache.RafsGlobalCache.Unlock()
+
+	inUse := make(map[string]bool)
+	for _, other := range racache.RafsGlobalCache.ListLocked() {
+		if other.NBDDevice != "" {
+			inUse[other.NBDDevice] = true
+		}
 	}
-	return d.States.NBDDevice
+	device, err := nbd.Allocate(inUse)
+	if err != nil {
+		return err
+	}
+	r.NBDDevice = device
+	return nil
 }
 
 func (fs *Filesystem) BootstrapFile(id string) (string, error) {

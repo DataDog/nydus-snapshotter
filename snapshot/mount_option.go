@@ -146,8 +146,9 @@ func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overla
 		}
 	}
 
-	// Insert Kata volume for nbd, which only holds the image: not when layers are stacked on it
-	if device := o.fs.NBDDevice(id); device != "" && !slices.ContainsFunc(overlayOptions, isStackedLowerDir) {
+	// Insert Kata volume for nbd, which only holds the image: not when layers are stacked on it,
+	// nor for the id-mapped mounts of user namespaces, which containerd mounts on the host.
+	if device := o.fs.NBDDevice(id); device != "" && !slices.ContainsFunc(overlayOptions, isHostOnlyOption) {
 		options, err := o.mountWithNBDVolume(device)
 		if err != nil {
 			return []mount.Mount{}, errors.Wrapf(err, "create kata volume for nbd")
@@ -181,8 +182,9 @@ func (o *snapshotter) mountWithKataVolume(ctx context.Context, id string, overla
 	return overlayMount(overlayOptions), nil
 }
 
-func isStackedLowerDir(option string) bool {
-	return strings.HasPrefix(option, "lowerdir=") && strings.Contains(option, ":")
+func isHostOnlyOption(option string) bool {
+	return strings.HasPrefix(option, "lowerdir=") && strings.Contains(option, ":") ||
+		strings.HasPrefix(option, "uidmap=")
 }
 
 func (o *snapshotter) mountWithNBDVolume(device string) ([]string, error) {

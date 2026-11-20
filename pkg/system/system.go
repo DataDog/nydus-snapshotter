@@ -13,19 +13,14 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
-	"regexp"
-	"strconv"
-	"strings"
-	"time"
 
 	"github.com/containerd/log"
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 
+	"github.com/containerd/nydus-snapshotter/config"
 	"github.com/containerd/nydus-snapshotter/pkg/daemon"
-	"github.com/containerd/nydus-snapshotter/pkg/daemon/types"
 	"github.com/containerd/nydus-snapshotter/pkg/errdefs"
 	"github.com/containerd/nydus-snapshotter/pkg/filesystem"
 	"github.com/containerd/nydus-snapshotter/pkg/manager"
@@ -378,115 +373,21 @@ func (sc *Controller) upgradeDaemons() func(w http.ResponseWriter, r *http.Reque
 }
 
 // Provide minimal parameters since most of it can be recovered by nydusd states.
-// Create a new daemon in Manger to take over the service.
+// Create a new daemon in the manager to take over the service.
 func (sc *Controller) upgradeNydusDaemon(d *daemon.Daemon, c upgradeRequest, manager *manager.Manager) error {
-	supervisor := d.Supervisor
-	if supervisor == nil {
+	// Daemons of the nbd driver hand their connections over, see Manager.UpgradeDaemonByHandover.
+	if d.Supervisor == nil && d.States.FsDriver != config.FsDriverNbd {
 		return errors.New("should set recover policy to failover to enable hot upgrade")
 	}
 
 	log.L.Infof("Upgrading nydusd %s, request %v", d.ID(), c)
 
-	fs := sc.fs
-
-	newDaemon := daemon.Daemon{
-		States:     d.States,
-		Supervisor: supervisor,
-	}
-	newDaemon.CloneRafsInstances(d)
-
-	s := path.Base(d.GetAPISock())
-	next, err := buildNextAPISocket(s)
+	newDaemon, err := manager.UpgradeDaemonLocked(d, c.NydusdPath)
 	if err != nil {
 		return err
 	}
-
-	upgradingSocket := path.Join(path.Dir(d.GetAPISock()), next)
-	newDaemon.States.APISocket = upgradingSocket
-
-	cmd, err := manager.BuildDaemonCommand(&newDaemon, c.NydusdPath, true)
-	if err != nil {
-		return err
-	}
-
-	if err := supervisor.SendStatesTimeout(time.Second * 10); err != nil {
-		return errors.Wrap(err, "Send states")
-	}
-
-	if err := cmd.Start(); err != nil {
-		return errors.Wrap(err, "start process")
-	}
-
-	newDaemon.States.ProcessID = cmd.Process.Pid
-
-	if err := newDaemon.WaitUntilState(types.DaemonStateInit); err != nil {
-		return errors.Wrap(err, "wait until init state")
-	}
-
-	if err := newDaemon.TakeOver(); err != nil {
-		return errors.Wrap(err, "take over resources")
-	}
-
-	if err := newDaemon.WaitUntilState(types.DaemonStateReady); err != nil {
-		return errors.Wrap(err, "wait unit ready state")
-	}
-
-	if err := manager.UnsubscribeDaemonEvent(d); err != nil {
-		return errors.Wrap(err, "unsubscribe daemon event")
-	}
-
-	// Let the older daemon exit and be reaped without umount.
-	if err := d.Exit(); err != nil {
-		return errors.Wrap(err, "old daemon exits")
-	}
-	if err := d.WaitForExit(); err != nil {
-		log.L.Warnf("wait old daemon %s exit failed: %v", d.ID(), err)
-	}
-
-	fs.TryRetainSharedDaemon(&newDaemon)
-
-	if err := newDaemon.Start(); err != nil {
-		return errors.Wrap(err, "start file system service")
-	}
-
-	if err := manager.SubscribeDaemonEvent(&newDaemon); err != nil {
-		return &json.InvalidUnmarshalError{}
-	}
-
-	log.L.Infof("Started service of upgraded daemon on socket %s", newDaemon.GetAPISock())
-
-	if err := manager.UpdateDaemonLocked(&newDaemon); err != nil {
-		return err
-	}
-
-	log.L.Infof("Upgraded daemon success on socket %s", newDaemon.GetAPISock())
-
+	sc.fs.TryRetainSharedDaemon(newDaemon)
 	return nil
-}
-
-// Name next api socket path based on currently api socket path listened on.
-// The principle is to add a suffix number to api[0-9]+.sock
-func buildNextAPISocket(cur string) (string, error) {
-	n := strings.Split(cur, ".")
-	if len(n) != 2 {
-		return "", errdefs.ErrInvalidArgument
-	}
-	r := regexp.MustCompile(`[0-9]+`)
-	m := r.Find([]byte(n[0]))
-	var num int
-	if m == nil {
-		num = 1
-	} else {
-		var err error
-		num, err = strconv.Atoi(string(m))
-		if err != nil {
-			return "", err
-		}
-		num++
-	}
-
-	nextSocket := fmt.Sprintf("api%d.sock", num)
-	return nextSocket, nil
 }
 
 // upgradeNydusdWithSymlink atomically creates a symbolic link from destinationPath to sourcePath.

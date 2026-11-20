@@ -153,20 +153,14 @@ type CgroupConfig struct {
 
 // Configure how to start and recover nydusd daemons
 type DaemonConfig struct {
-	NydusdPath       string    `toml:"nydusd_path"`
-	NydusdConfigPath string    `toml:"nydusd_config"`
-	NydusImagePath   string    `toml:"nydusimage_path"`
-	RecoverPolicy    string    `toml:"recover_policy"`
-	FsDriver         string    `toml:"fs_driver"`
-	ThreadsNumber    int       `toml:"threads_number"`
-	LogRotationSize  int       `toml:"log_rotation_size"`
-	FailoverPolicy   string    `toml:"failover_policy"`
-	NBDConfig        NBDConfig `toml:"nbd"`
-}
-
-type NBDConfig struct {
-	// Attributes of the block queue of the NBD devices, e.g. read_ahead_kb
-	QueueAttributes map[string]string `toml:"queue_attributes"`
+	NydusdPath       string `toml:"nydusd_path"`
+	NydusdConfigPath string `toml:"nydusd_config"`
+	NydusImagePath   string `toml:"nydusimage_path"`
+	RecoverPolicy    string `toml:"recover_policy"`
+	FsDriver         string `toml:"fs_driver"`
+	ThreadsNumber    int    `toml:"threads_number"`
+	LogRotationSize  int    `toml:"log_rotation_size"`
+	FailoverPolicy   string `toml:"failover_policy"`
 }
 
 type LoggingConfig struct {

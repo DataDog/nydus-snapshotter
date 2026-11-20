@@ -61,8 +61,6 @@ type ConfigState struct {
 	FailoverPolicy  string
 	// Where the configuration file resides, all rafs instances share the same configuration template
 	ConfigDir string
-	// NBD device served by the daemon, kept across restarts and upgrades
-	NBDDevice string `json:",omitempty"`
 }
 
 // TODO: Record queried nydusd state

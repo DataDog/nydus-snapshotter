@@ -25,7 +25,6 @@ import (
 	"github.com/containerd/nydus-snapshotter/pkg/daemon/types"
 	"github.com/containerd/nydus-snapshotter/pkg/errdefs"
 	"github.com/containerd/nydus-snapshotter/pkg/metrics/collector"
-	"github.com/containerd/nydus-snapshotter/pkg/nbd"
 	"github.com/containerd/nydus-snapshotter/pkg/rafs"
 	"github.com/containerd/nydus-snapshotter/pkg/store"
 	"github.com/containerd/nydus-snapshotter/pkg/supervisor"
@@ -214,17 +213,6 @@ func (m *Manager) AddDaemon(daemon *daemon.Daemon) error {
 
 	if old := m.daemonCache.GetByDaemonID(daemon.ID(), nil); old != nil {
 		return errdefs.ErrAlreadyExists
-	}
-	if daemon.States.FsDriver == config.FsDriverNbd && daemon.States.NBDDevice == "" {
-		inUse := make(map[string]bool)
-		for _, d := range m.daemonCache.List() {
-			inUse[d.States.NBDDevice] = true
-		}
-		device, err := nbd.Allocate(inUse)
-		if err != nil {
-			return err
-		}
-		daemon.States.NBDDevice = device
 	}
 	if err := m.store.AddDaemon(daemon); err != nil {
 		return errors.Wrapf(err, "add daemon %s", daemon.ID())
