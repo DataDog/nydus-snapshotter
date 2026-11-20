@@ -24,6 +24,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 
+	"github.com/containerd/nydus-snapshotter/config"
 	"github.com/containerd/nydus-snapshotter/pkg/daemon"
 	"github.com/containerd/nydus-snapshotter/pkg/daemon/types"
 	"github.com/containerd/nydus-snapshotter/pkg/errdefs"
@@ -381,7 +382,8 @@ func (sc *Controller) upgradeDaemons() func(w http.ResponseWriter, r *http.Reque
 // Create a new daemon in Manger to take over the service.
 func (sc *Controller) upgradeNydusDaemon(d *daemon.Daemon, c upgradeRequest, manager *manager.Manager) error {
 	supervisor := d.Supervisor
-	if supervisor == nil {
+	// Daemons of the nbd driver hand their connections over, see Manager.UpgradeDaemonByHandover.
+	if supervisor == nil && d.States.FsDriver != config.FsDriverNbd {
 		return errors.New("should set recover policy to failover to enable hot upgrade")
 	}
 
@@ -407,6 +409,13 @@ func (sc *Controller) upgradeNydusDaemon(d *daemon.Daemon, c upgradeRequest, man
 	cmd, err := manager.BuildDaemonCommand(&newDaemon, c.NydusdPath, true)
 	if err != nil {
 		return err
+	}
+
+	if supervisor == nil {
+		if err := manager.UpgradeDaemonByHandover(d, &newDaemon, cmd); err != nil {
+			return err
+		}
+		return manager.UpdateDaemonLocked(&newDaemon)
 	}
 
 	if err := supervisor.SendStatesTimeout(time.Second * 10); err != nil {

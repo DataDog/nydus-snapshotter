@@ -38,6 +38,7 @@ type DaemonCommand struct {
 	PrefetchFiles   string `type:"param" name:"prefetch-files"`
 	BackendSource   string `type:"param" name:"backend-source"`
 	FailoverPolicy  string `type:"param" name:"failover-policy"`
+	NBDNetlink      bool   `type:"flag" name:"netlink" default:""`
 	NBDDevice       string `type:"positional"`
 }
 
@@ -197,6 +198,12 @@ func WithID(id string) Opt {
 func WithUpgrade() Opt {
 	return func(cmd *DaemonCommand) {
 		cmd.Upgrade = true
+	}
+}
+
+func WithNBDNetlink() Opt {
+	return func(cmd *DaemonCommand) {
+		cmd.NBDNetlink = true
 	}
 }
 

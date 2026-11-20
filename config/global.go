@@ -66,6 +66,9 @@ func GetMirrorsConfigDir() string {
 }
 
 func GetFsDriver() string {
+	if globalConfig.origin == nil {
+		return ""
+	}
 	return globalConfig.origin.DaemonConfig.FsDriver
 }
 
@@ -83,10 +86,6 @@ func GetDaemonLogRotationSize() int {
 
 func GetDaemonThreadsNumber() int {
 	return globalConfig.origin.DaemonConfig.ThreadsNumber
-}
-
-func GetNBDConfig() NBDConfig {
-	return globalConfig.origin.DaemonConfig.NBDConfig
 }
 
 func GetDaemonFailoverPolicy() string {

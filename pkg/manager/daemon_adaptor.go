@@ -139,7 +139,7 @@ func (m *Manager) BuildDaemonCommand(d *daemon.Daemon, bin string, upgrade bool)
 		if rafs == nil {
 			return nil, errors.Wrapf(errdefs.ErrNotFound, "daemon %s no rafs instance associated", d.ID())
 		}
-		if d.States.NBDDevice == "" {
+		if rafs.NBDDevice == "" {
 			return nil, errors.Errorf("daemon %s has no NBD device", d.ID())
 		}
 		bootstrap, err := rafs.BootstrapFile()
@@ -148,8 +148,10 @@ func (m *Manager) BuildDaemonCommand(d *daemon.Daemon, bin string, upgrade bool)
 		}
 		cmdOpts = append(cmdOpts,
 			command.WithMode("nbd"),
+			// netlink lets a restarted daemon take the device over.
+			command.WithNBDNetlink(),
 			command.WithMountpoint(d.HostMountpoint()),
-			command.WithNBDDevice(d.States.NBDDevice),
+			command.WithNBDDevice(rafs.NBDDevice),
 			command.WithConfig(d.ConfigFile("")),
 			command.WithBootstrap(bootstrap),
 		)

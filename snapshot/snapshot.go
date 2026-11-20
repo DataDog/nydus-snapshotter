@@ -1169,13 +1169,21 @@ func (o *snapshotter) mountRemote(ctx context.Context, labels map[string]string,
 		}
 	}
 
-	rafsKey, err := label.RafsInstanceIDFromLabels(id, labels)
+	rafsKey, err := filesystem.RafsInstanceID(id, labels)
 	if err != nil {
 		return nil, errors.Wrap(err, "parse id mapping for remote mount")
 	}
 	lowerPathNydus, err := o.lowerPath(rafsKey)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to locate overlay lowerdir")
+	}
+	idMapping, _ := label.ParseIDMapping(labels)
+	idMapImage := idMapping != nil && config.GetFsDriver() == config.FsDriverNbd
+	if idMapImage {
+		// containerd 2.0 id-maps the parent directory of the lowerdirs without its submounts,
+		// which hides the image mount: "/." makes the image mount the parent. A no-op for
+		// containerd 2.1+, which id-maps each lowerdir or the submounts too.
+		lowerPathNydus += "/."
 	}
 	lowerPaths = append(lowerPaths, lowerPathNydus)
 
@@ -1199,10 +1207,19 @@ func (o *snapshotter) mountRemote(ctx context.Context, labels map[string]string,
 	overlayOptions = append(overlayOptions, lowerDirOption)
 	log.G(ctx).Infof("remote mount options %v", overlayOptions)
 
+	// uidmap=/gidmap= are consumed by containerd's mount package, which id-maps the image
+	// mount of the nbd driver. nydusd applies the mapping itself for the fusedev driver.
+	if idMapImage {
+		overlayOptions = append(overlayOptions,
+			fmt.Sprintf("uidmap=%d:%d:%d", idMapping.Internal, idMapping.External, idMapping.Range),
+			fmt.Sprintf("gidmap=%d:%d:%d", idMapping.Internal, idMapping.External, idMapping.Range),
+		)
+	}
+
 	// Chown overlay upperdir/workdir to the mapped host UID (from
 	// remap-ids labels) so the container can write to its rootfs.
 	if s.Kind == snapshots.KindActive {
-		if idMapping, _ := label.ParseIDMapping(labels); idMapping != nil {
+		if idMapping != nil {
 			externalID := int(idMapping.External)
 			for _, d := range []string{o.upperPath(s.ID), o.workPath(s.ID)} {
 				if err := os.Lchown(d, externalID, externalID); err != nil {

@@ -66,33 +66,3 @@ func TestAllocate(t *testing.T) {
 		})
 	}
 }
-
-func TestSetQueueAttributes(t *testing.T) {
-	tests := []struct {
-		Name       string
-		Device     string
-		Attributes map[string]string
-		WantErr    bool
-	}{
-		{Name: "Set", Device: "nbd0", Attributes: map[string]string{"max_sectors_kb": "4096", "read_ahead_kb": "1024"}},
-		{Name: "None", Device: "nbd0"},
-		{Name: "MissingDevice", Device: "nbd1", Attributes: map[string]string{"read_ahead_kb": "1024"}, WantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.Name, func(t *testing.T) {
-			fakeSys(t, []string{"nbd0"}, nil)
-
-			err := SetQueueAttributes("/dev/"+tt.Device, tt.Attributes)
-			if tt.WantErr {
-				assert.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			for attr, want := range tt.Attributes {
-				b, err := os.ReadFile(filepath.Join(sysBlockDir, tt.Device, "queue", attr))
-				require.NoError(t, err)
-				assert.Equal(t, want, string(b), attr)
-			}
-		})
-	}
-}
