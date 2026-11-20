@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"os"
 	"path"
+	"reflect"
+	"strings"
 
 	"github.com/pkg/errors"
 
@@ -35,6 +37,60 @@ type FuseDaemonConfig struct {
 	// remap-ids support. Serialized as a 3-element JSON array to match nydusd's
 	// `RafsConfigV2.id_mapping` tuple. Omitted when no mapping is configured.
 	IDMapping *[3]uint32 `json:"id_mapping,omitempty"`
+	// Options the snapshotter does not handle, e.g. the nbd section, kept as is for nydusd.
+	Extra map[string]json.RawMessage `json:"-"`
+}
+
+// fuseConfigKeys are the JSON keys of the options FuseDaemonConfig handles.
+var fuseConfigKeys = func() map[string]bool {
+	keys := make(map[string]bool)
+	t := reflect.TypeOf(FuseDaemonConfig{})
+	for i := 0; i < t.NumField(); i++ {
+		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name != "" && name != "-" {
+			keys[name] = true
+		}
+	}
+	return keys
+}()
+
+// UnmarshalJSON keeps the options FuseDaemonConfig does not handle in Extra.
+func (c *FuseDaemonConfig) UnmarshalJSON(data []byte) error {
+	type plain FuseDaemonConfig
+	if err := json.Unmarshal(data, (*plain)(c)); err != nil {
+		return err
+	}
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(data, &all); err != nil {
+		return err
+	}
+	for key, value := range all {
+		if !fuseConfigKeys[key] {
+			if c.Extra == nil {
+				c.Extra = make(map[string]json.RawMessage)
+			}
+			c.Extra[key] = value
+		}
+	}
+	return nil
+}
+
+// MarshalJSON writes the options of Extra back.
+func (c FuseDaemonConfig) MarshalJSON() ([]byte, error) {
+	type plain FuseDaemonConfig
+	b, err := json.Marshal(plain(c))
+	if err != nil || len(c.Extra) == 0 {
+		return b, err
+	}
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(b, &all); err != nil {
+		return nil, err
+	}
+	for key, value := range c.Extra {
+		if !fuseConfigKeys[key] {
+			all[key] = value
+		}
+	}
+	return json.Marshal(all)
 }
 
 // Control how to perform prefetch from file system layer

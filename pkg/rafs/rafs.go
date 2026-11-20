@@ -122,6 +122,9 @@ type Rafs struct {
 	// 2. Absolute path to each rafs instance root directory.
 	Mountpoint  string
 	Annotations map[string]string
+	// NBD device serving the image of this instance, kept across restarts and upgrades of
+	// the snapshotter and of the daemon. Empty for the other drivers.
+	NBDDevice string
 }
 
 func NewRafs(snapshotID, imageID, fsDriver string) (*Rafs, error) {

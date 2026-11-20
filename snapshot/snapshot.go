@@ -102,7 +102,7 @@ func NewSnapshotter(ctx context.Context, cfg *config.SnapshotterConfig) (snapsho
 	var skipSSLVerify bool
 	var daemonConfig *daemonconfig.DaemonConfig
 	fsDriver := config.GetFsDriver()
-	if fsDriver == config.FsDriverFscache || fsDriver == config.FsDriverFusedev {
+	if config.UsesNydusd(fsDriver) {
 		config, err := daemonconfig.NewDaemonConfig(config.GetFsDriver(), cfg.DaemonConfig.NydusdConfigPath)
 		if err != nil {
 			return nil, errors.Wrap(err, "load daemon configuration")
@@ -149,19 +149,19 @@ func NewSnapshotter(ctx context.Context, cfg *config.SnapshotterConfig) (snapsho
 		fsManagers = append(fsManagers, fscacheManager)
 	}
 
-	if config.GetFsDriver() == config.FsDriverFusedev {
+	if d := config.GetFsDriver(); d == config.FsDriverFusedev || d == config.FsDriverNbd {
 		fusedevManager, err := mgr.NewManager(mgr.Opt{
 			NydusdBinaryPath: cfg.DaemonConfig.NydusdPath,
 			Database:         db,
 			CacheDir:         cfg.CacheManagerConfig.CacheDir,
 			RootDir:          cfg.Root,
 			RecoverPolicy:    rp,
-			FsDriver:         config.FsDriverFusedev,
+			FsDriver:         d,
 			DaemonConfig:     daemonConfig,
 			CgroupMgr:        cgroupMgr,
 		})
 		if err != nil {
-			return nil, errors.Wrap(err, "create fusedev manager")
+			return nil, errors.Wrapf(err, "create %s manager", d)
 		}
 		fsManagers = append(fsManagers, fusedevManager)
 	}
@@ -1169,13 +1169,21 @@ func (o *snapshotter) mountRemote(ctx context.Context, labels map[string]string,
 		}
 	}
 
-	rafsKey, err := label.RafsInstanceIDFromLabels(id, labels)
+	rafsKey, err := filesystem.RafsInstanceID(id, labels)
 	if err != nil {
 		return nil, errors.Wrap(err, "parse id mapping for remote mount")
 	}
 	lowerPathNydus, err := o.lowerPath(rafsKey)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to locate overlay lowerdir")
+	}
+	idMapping, _ := label.ParseIDMapping(labels)
+	idMapImage := idMapping != nil && config.GetFsDriver() == config.FsDriverNbd
+	if idMapImage {
+		// containerd 2.0 id-maps the parent directory of the lowerdirs without its submounts,
+		// which hides the image mount: "/." makes the image mount the parent. A no-op for
+		// containerd 2.1+, which id-maps each lowerdir or the submounts too.
+		lowerPathNydus += "/."
 	}
 	lowerPaths = append(lowerPaths, lowerPathNydus)
 
@@ -1199,10 +1207,19 @@ func (o *snapshotter) mountRemote(ctx context.Context, labels map[string]string,
 	overlayOptions = append(overlayOptions, lowerDirOption)
 	log.G(ctx).Infof("remote mount options %v", overlayOptions)
 
+	// uidmap=/gidmap= are consumed by containerd's mount package, which id-maps the image
+	// mount of the nbd driver. nydusd applies the mapping itself for the fusedev driver.
+	if idMapImage {
+		overlayOptions = append(overlayOptions,
+			fmt.Sprintf("uidmap=%d:%d:%d", idMapping.Internal, idMapping.External, idMapping.Range),
+			fmt.Sprintf("gidmap=%d:%d:%d", idMapping.Internal, idMapping.External, idMapping.Range),
+		)
+	}
+
 	// Chown overlay upperdir/workdir to the mapped host UID (from
 	// remap-ids labels) so the container can write to its rootfs.
 	if s.Kind == snapshots.KindActive {
-		if idMapping, _ := label.ParseIDMapping(labels); idMapping != nil {
+		if idMapping != nil {
 			externalID := int(idMapping.External)
 			for _, d := range []string{o.upperPath(s.ID), o.workPath(s.ID)} {
 				if err := os.Lchown(d, externalID, externalID); err != nil {
@@ -1397,7 +1414,7 @@ func collectUsedCacheBlobIDs(instances []*rafs.Rafs) (map[string]bool, bool) {
 	complete := true
 	for _, instance := range instances {
 		fsDriver := instance.GetFsDriver()
-		if fsDriver != config.FsDriverFscache && fsDriver != config.FsDriverFusedev {
+		if !config.UsesNydusd(fsDriver) {
 			// Only blobcache-backed drivers materialize files in the cache
 			// directory; other drivers never populate UnderlyingFiles.
 			continue
@@ -1428,7 +1445,7 @@ func (o *snapshotter) reconcileUnknownCacheUsage() {
 		for _, d := range fsManager.ListDaemons() {
 			for snapshotID, instance := range d.RafsCache.List() {
 				fsDriver := instance.GetFsDriver()
-				if fsDriver != config.FsDriverFscache && fsDriver != config.FsDriverFusedev {
+				if !config.UsesNydusd(fsDriver) {
 					continue
 				}
 				if len(instance.UnderlyingFiles) != 0 {

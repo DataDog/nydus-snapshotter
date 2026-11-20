@@ -686,7 +686,7 @@ func (d *Daemon) Wait() error {
 	if d.Pid() > 0 {
 		if err := d.waitProcessLocked(); err != nil {
 			log.L.Errorf("failed to process wait, %v", err)
-		} else if d.HostMountpoint() != "" && config.GetFsDriver() == config.FsDriverFusedev {
+		} else if d.HostMountpoint() != "" && (config.GetFsDriver() == config.FsDriverFusedev || config.GetFsDriver() == config.FsDriverNbd) {
 			// No need to umount if the nydusd never performs mount. In other word, it does not
 			// associate with a host mountpoint.
 			if err := mount.WaitUntilUnmounted(d.HostMountpoint()); err != nil {

@@ -17,6 +17,7 @@ import (
 	"github.com/containerd/containerd/v2/core/mount"
 	"github.com/containerd/containerd/v2/core/snapshots"
 	"github.com/containerd/containerd/v2/core/snapshots/storage"
+	"github.com/containerd/nydus-snapshotter/config"
 	"github.com/containerd/nydus-snapshotter/pkg/filesystem"
 	"github.com/containerd/nydus-snapshotter/pkg/label"
 	"github.com/containerd/nydus-snapshotter/pkg/rafs"
@@ -464,6 +465,75 @@ func TestMountRemoteUsesPerPodLowerdirForIDMap(t *testing.T) {
 	require.Len(t, mounts, 1)
 	assert.Contains(t, mounts[0].Options, fmt.Sprintf("lowerdir=%s", mountpoint))
 	assert.NotContains(t, mounts[0].Options, fmt.Sprintf("lowerdir=%s", filepath.Join(snapshotterRoot, "snapshots", "meta", "fs")))
+}
+
+func TestMountRemoteIDMapsNBDImageMount(t *testing.T) {
+	originalInstances := rafs.RafsGlobalCache.List()
+	rafs.RafsGlobalCache.SetIntances(make(map[string]*rafs.Rafs))
+	t.Cleanup(func() {
+		rafs.RafsGlobalCache.SetIntances(originalInstances)
+	})
+
+	require.NoError(t, config.ProcessConfigurations(&config.SnapshotterConfig{
+		DaemonMode:   string(config.DaemonModeDedicated),
+		DaemonConfig: config.DaemonConfig{
+			FsDriver:      config.FsDriverNbd,
+			RecoverPolicy: config.RecoverPolicyRestart.String(),
+		},
+	}))
+	t.Cleanup(func() {
+		require.NoError(t, config.ProcessConfigurations(&config.SnapshotterConfig{
+			DaemonMode:   string(config.DaemonModeDedicated),
+			DaemonConfig: config.DaemonConfig{FsDriver: config.FsDriverFusedev},
+		}))
+	})
+
+	snapshotterRoot := t.TempDir()
+	s := &snapshotter{
+		root: snapshotterRoot,
+		fs:   &filesystem.Filesystem{},
+	}
+
+	// The nbd driver keys rafs instances by snapshot: one image instance for all pods.
+	mountpoint := filepath.Join(snapshotterRoot, "mnt", "meta")
+	rafs.RafsGlobalCache.Add(&rafs.Rafs{
+		SnapshotID:  "meta",
+		SnapshotDir: filepath.Join(snapshotterRoot, "snapshots", "meta"),
+		Mountpoint:  mountpoint,
+		FsDriver:    config.FsDriverNbd,
+	})
+
+	t.Run("id-mapped image mount", func(t *testing.T) {
+		mounts, err := s.mountRemote(context.Background(), map[string]string{
+			label.SnapshotUIDMapping: "0:100000:65536",
+			label.SnapshotGIDMapping: "0:100000:65536",
+		}, storage.Snapshot{
+			ID:   "active",
+			Kind: snapshots.KindActive,
+		}, "meta", "active-key")
+		require.NoError(t, err)
+		require.Len(t, mounts, 1)
+
+		// "/." makes the image mount the parent of the lowerdir, which containerd 2.0
+		// id-maps: it binds the parent of each lowerdir without its submounts.
+		assert.Contains(t, mounts[0].Options, fmt.Sprintf("lowerdir=%s/.", mountpoint))
+		// containerd id-maps the image mount of the nbd driver, nydusd does it for fusedev.
+		assert.Contains(t, mounts[0].Options, "uidmap=0:100000:65536")
+		assert.Contains(t, mounts[0].Options, "gidmap=0:100000:65536")
+	})
+
+	t.Run("unmapped image mount", func(t *testing.T) {
+		mounts, err := s.mountRemote(context.Background(), nil, storage.Snapshot{
+			ID:   "active",
+			Kind: snapshots.KindActive,
+		}, "meta", "active-key")
+		require.NoError(t, err)
+		require.Len(t, mounts, 1)
+
+		assert.Contains(t, mounts[0].Options, fmt.Sprintf("lowerdir=%s", mountpoint))
+		assert.NotContains(t, mounts[0].Options, "uidmap=")
+		assert.NotContains(t, mounts[0].Options, "/.")
+	})
 }
 
 func TestRemoveCleansUpDirectoriesOnlyAfterCommit(t *testing.T) {
