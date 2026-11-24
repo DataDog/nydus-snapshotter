@@ -66,6 +66,9 @@ func GetMirrorsConfigDir() string {
 }
 
 func GetFsDriver() string {
+	if globalConfig.origin == nil {
+		return ""
+	}
 	return globalConfig.origin.DaemonConfig.FsDriver
 }
 

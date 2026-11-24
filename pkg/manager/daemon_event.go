@@ -9,6 +9,7 @@ package manager
 
 import (
 	"fmt"
+	"os/exec"
 	"path"
 	"regexp"
 	"strconv"
@@ -164,6 +165,19 @@ func (m *Manager) DoDaemonUpgrade(d *daemon.Daemon, nydusdPath string, manager *
 		return nil, err
 	}
 
+	// A daemon of the nbd driver, the only ones without a supervisor: it hands its
+	// connections over to the new daemon.
+	if supervisor == nil {
+		if err := manager.UpgradeDaemonByHandover(d, newDaemon, cmd); err != nil {
+			return nil, err
+		}
+		if err := manager.UpdateDaemon(newDaemon); err != nil {
+			return nil, err
+		}
+		log.L.Infof("Upgraded daemon success on socket %s", newDaemon.GetAPISock())
+		return newDaemon, nil
+	}
+
 	if err := supervisor.SendStatesTimeout(time.Second * 10); err != nil {
 		return nil, errors.Wrap(err, "Send states")
 	}
@@ -221,6 +235,38 @@ func (m *Manager) DoDaemonUpgrade(d *daemon.Daemon, nydusdPath string, manager *
 
 	log.L.Infof("Upgraded daemon success on socket %s", newDaemon.GetAPISock())
 	return newDaemon, err
+}
+
+// UpgradeDaemonByHandover replaces daemon d of the nbd driver by newDaemon, started by cmd in
+// upgrade mode: newDaemon takes the connections of the NBD device over from d, which exits once
+// they are served. The kernel queues the requests meanwhile, none is lost.
+func (manager *Manager) UpgradeDaemonByHandover(d, newDaemon *daemon.Daemon, cmd *exec.Cmd) error {
+	// d exits on its own, it is not a death to recover from.
+	if err := manager.UnsubscribeDaemonEvent(d); err != nil {
+		return errors.Wrap(err, "unsubscribe daemon event")
+	}
+	if err := cmd.Start(); err != nil {
+		_ = manager.SubscribeDaemonEvent(d)
+		return errors.Wrap(err, "start process")
+	}
+	newDaemon.States.ProcessID = cmd.Process.Pid
+	err := daemon.WaitUntilSocketExisted(newDaemon.GetAPISock(), newDaemon.States.ProcessID)
+	if err == nil {
+		err = newDaemon.WaitUntilState(types.DaemonStateRunning)
+	}
+	if err != nil {
+		// d keeps serving the device when the handover does not complete.
+		_ = cmd.Process.Kill()
+		_ = manager.SubscribeDaemonEvent(d)
+		return errors.Wrapf(err, "wait for daemon %s", newDaemon.ID())
+	}
+	if err := manager.SubscribeDaemonEvent(newDaemon); err != nil {
+		return errors.Wrap(err, "subscribe new daemon event")
+	}
+	if err := d.WaitForExit(); err != nil {
+		log.L.Warnf("wait old daemon %s exit failed: %v", d.ID(), err)
+	}
+	return nil
 }
 
 // Name next api socket path based on currently api socket path listened on.
